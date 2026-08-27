@@ -13,13 +13,13 @@ reviews:
   collapse_walkthrough: true
   changed_files_summary: true
 
-tools:
-  shellcheck:
-    enabled: true
-  github-checks:
-    enabled: true
-  golangci-lint:
-    enabled: true
-  biome: { enabled: false }
-  swiftlint: { enabled: false }
-  phpstan: { enabled: false }
+  tools:
+    shellcheck:
+      enabled: true
+    github-checks:
+      enabled: true
+    golangci-lint:
+      enabled: true
+    biome: { enabled: false }
+    swiftlint: { enabled: false }
+    phpstan: { enabled: false }
