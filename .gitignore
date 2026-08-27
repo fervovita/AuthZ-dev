@@ -1,0 +1,32 @@
+# Editors
+.idea
+.vscode
+
+# direnv cache
+.direnv/
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Dependency directories (remove the comment below to include it)
+# vendor/
+/bin/
+
+# Test binary, built with `go test -c`
+*.test
+
+# Coverage and profiling output
+*.out
+*.prof
+*.pprof
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Local environment
+.env

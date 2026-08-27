@@ -1,0 +1,25 @@
+language: 'ko'
+
+early_access: false
+reviews:
+  profile: 'chill'
+  request_changes_workflow: false
+  high_level_summary: true
+  high_level_summary_placeholder: '@coderabbitai summary'
+  auto_title_placeholder: '@coderabbitai'
+  review_status: true
+  commit_status: true
+  poem: false
+  collapse_walkthrough: true
+  changed_files_summary: true
+
+tools:
+  shellcheck:
+    enabled: true
+  github-checks:
+    enabled: true
+  golangci-lint:
+    enabled: true
+  biome: { enabled: false }
+  swiftlint: { enabled: false }
+  phpstan: { enabled: false }

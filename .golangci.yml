@@ -1,0 +1,96 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - gosec
+    - goprintffuncname
+    - staticcheck
+    - ineffassign
+    - unused
+    - exhaustive
+    - errorlint
+    - errname
+    - contextcheck
+    - durationcheck
+    - copyloopvar
+    - predeclared
+    - bidichk
+    - revive
+    - gocritic
+    - misspell
+    - unconvert
+    - wastedassign
+    - whitespace
+
+  settings:
+    exhaustive:
+      default-signifies-exhaustive: false
+
+    staticcheck:
+      checks:
+        - all
+        - "-SA9004"
+
+    gosec:
+      excludes:
+        - G115
+
+    gocritic:
+      disabled-checks:
+        - exitAfterDefer
+
+    revive:
+      severity: warning
+      rules:
+        - name: atomic
+        - name: constant-logical-expr
+        - name: identical-branches
+        - name: unreachable-code
+        - name: defer
+          arguments:
+            - ["call-chain", "loop", "method-call", "recover", "return"]
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: errorf
+        - name: exported
+        - name: package-comments
+        - name: unexported-naming
+        - name: unexported-return
+        - name: receiver-naming
+        - name: var-naming
+        - name: early-return
+        - name: indent-error-flow
+        - name: empty-block
+        - name: increment-decrement
+        - name: range
+        - name: var-declaration
+        - name: unused-parameter
+        - name: blank-imports
+        - name: dot-imports
+        - name: duplicated-imports
+        - name: redefines-builtin-id
+        - name: bool-literal-in-expr
+        - name: call-to-gc
+        - name: get-return
+        - name: string-of-int
+        - name: time-naming
+
+  exclusions:
+    generated: lax
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+
+  exclusions:
+    generated: lax
