@@ -1,3 +1,3 @@
 module github.com/fervovita/AuthZ-dev
 
-go 1.25
+go 1.26
