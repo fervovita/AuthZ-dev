@@ -37,10 +37,6 @@ linters:
         - all
         - "-SA9004"
 
-    gosec:
-      excludes:
-        - G115
-
     gocritic:
       disabled-checks:
         - exitAfterDefer
