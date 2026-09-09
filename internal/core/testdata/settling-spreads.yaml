@@ -1,0 +1,58 @@
+# Generator-found (TestCheckAgreesWithTheFixedPoint): the shape is arbitrary, not designed.
+name: a component found through a chain of answers
+schema:
+  team:
+    viewer:
+      any:
+        - any: [member, viewer]
+        - this
+    owner:
+      all: [member, banned]
+    banned:
+      all:
+        - all: [viewer, member]
+        - all: [viewer, this]
+    member:
+      any:
+        - all: [this, viewer]
+        - all: [this, banned]
+tuples:
+  - team:1#banned@user:alice
+  - team:1#member@user:*
+  - team:1#member@team:3#banned
+  - team:2#viewer@team:1#banned
+  - team:2#viewer@user:alice
+  - team:2#owner@team:2#banned
+  - team:2#banned@team:4#viewer
+  - team:2#banned@team:3#viewer
+  - team:2#member@team:4#member
+  - team:2#member@user:*
+  - team:3#viewer@user:alice
+  - team:3#viewer@team:3#viewer
+  - team:3#owner@team:4#banned
+  - team:3#owner@team:4#viewer
+  - team:3#banned@team:1#member
+  - team:3#banned@team:2#banned
+  - team:3#member@user:*
+  - team:3#member@team:1#member
+  - team:4#viewer@team:4#owner
+  - team:4#viewer@team:3#banned
+  - team:4#owner@user:alice
+  - team:4#owner@user:alice
+  - team:4#banned@team:2#owner
+  - team:4#banned@team:3#owner
+  - team:4#member@team:2#banned
+checks:
+  - check: team:4#banned@user:alice
+    expect: true
+    why: reached during settling, and only correct once it is settled with the rest
+
+  - check: team:4#viewer@user:alice
+    expect: true
+    why: the same, one edge further out
+
+  - check: team:1#member@user:alice
+    expect: false
+    why: >-
+      the wildcard on team:1#member is read by member's this, but member also needs viewer
+      or banned on team:1, and neither holds
