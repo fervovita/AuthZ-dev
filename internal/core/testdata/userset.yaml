@@ -1,0 +1,51 @@
+name: usersets and nested groups
+schema:
+  document:
+    viewer: this
+  team:
+    member: this
+tuples:
+  - document:d1#viewer@team:eng#member
+  - team:eng#member@user:alice
+  - team:eng#member@team:platform#member
+  - team:platform#member@user:bob
+  - team:platform#member@team:core#member
+  - team:core#member@user:carol
+  - document:pub#viewer@user:*
+  - document:open#viewer@team:*
+checks:
+  - check: document:d1#viewer@user:alice
+    expect: true
+    why: a direct member of the named team
+
+  - check: document:d1#viewer@user:bob
+    expect: true
+    why: one level of nesting
+
+  - check: document:d1#viewer@user:carol
+    expect: true
+    why: two levels of nesting
+
+  - check: document:d1#viewer@user:dave
+    expect: false
+    why: in none of the groups
+
+  - check: team:platform#member@user:alice
+    expect: false
+    why: nesting points from eng to platform, not the other way
+
+  - check: document:pub#viewer@user:dave
+    expect: true
+    why: user:* covers any user
+
+  - check: document:pub#viewer@team:eng
+    expect: false
+    why: a wildcard is scoped to its own subject type, so it does not cover a team
+
+  - check: document:open#viewer@team:eng
+    expect: true
+    why: team:* covers the team objects themselves
+
+  - check: document:open#viewer@team:eng#member
+    expect: false
+    why: a wildcard names every object of a type, and a userset is a set rather than one of them

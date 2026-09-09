@@ -1,0 +1,43 @@
+# Generator-found (TestCheckAgreesWithTheFixedPoint): the shape is arbitrary, not designed.
+name: settling pulls in relations the traversal never reached
+schema:
+  team:
+    viewer:
+      all:
+        - any: [owner, banned]
+        - all: [this, banned]
+    owner:
+      all:
+        - all: [banned, viewer]
+        - all: [viewer, member]
+    banned:
+      any:
+        - viewer
+        - any: [owner, this]
+    member:
+      all:
+        - this
+        - any: [this, viewer]
+tuples:
+  - team:1#viewer@team:2#owner
+  - team:1#banned@user:alice
+  - team:1#member@team:2#banned
+  - team:1#member@user:alice
+  - team:2#viewer@user:alice
+  - team:2#banned@team:1#owner
+  - team:2#banned@team:1#banned
+  - team:2#member@team:1#member
+checks:
+  - check: team:1#owner@user:alice
+    expect: true
+    why: >-
+      viewer(1) only reaches team:2#owner once banned(1) is known, which the traversal
+      learns too late; team:2#owner then needs a further round of its own
+
+  - check: team:1#viewer@user:alice
+    expect: true
+    why: the branch that was short-circuited past is the one that grants it
+
+  - check: team:2#owner@user:alice
+    expect: true
+    why: the relation settling pulled in

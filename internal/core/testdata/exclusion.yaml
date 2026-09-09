@@ -1,0 +1,46 @@
+name: exclusion, including against a wildcard grant
+schema:
+  document:
+    viewer: this
+    owner: this
+    banned: this
+    view:
+      exclude:
+        base: {any: [viewer, owner]}
+        subtract: banned
+    strict:
+      all: [viewer, owner]
+  team:
+    member: this
+tuples:
+  - document:d1#viewer@user:alice
+  - document:d1#banned@user:alice
+  - document:d1#owner@user:bob
+  - document:pub#viewer@user:*
+  - document:pub#banned@user:mallory
+  - document:pub#banned@team:blocked#member
+  - team:blocked#member@user:nina
+checks:
+  - check: document:d1#view@user:alice
+    expect: false
+    why: banned overrides a direct grant
+
+  - check: document:d1#view@user:bob
+    expect: true
+    why: the owner branch of the base, and not banned
+
+  - check: document:pub#view@user:carol
+    expect: true
+    why: user:* satisfies the base and nothing subtracts carol
+
+  - check: document:pub#view@user:mallory
+    expect: false
+    why: the wildcard grants, the exclusion takes it back
+
+  - check: document:pub#view@user:nina
+    expect: false
+    why: banned through a group, against a wildcard grant
+
+  - check: document:d1#strict@user:bob
+    expect: false
+    why: an intersection needs both operands and bob is not a viewer
