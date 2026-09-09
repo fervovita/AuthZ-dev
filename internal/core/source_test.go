@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 	"testing"
 )
 
@@ -12,8 +13,10 @@ import (
 type stubSource struct {
 	subjects map[stubKey][]SubjectRef
 
-	// Reused between answers, as the contract allows, so a caller that forgets to copy inside yield sees the reuse.
-	// A real source needs one buffer per call.
+	// Reused across calls, as the contract allows, so a caller that forgets to copy inside
+	// yield reads a later call's answer. mu is what makes that reuse safe under concurrent
+	// Checks; a real source would keep a buffer per call or per connection instead.
+	mu      sync.Mutex
 	scratch []SubjectRef
 }
 
@@ -24,7 +27,11 @@ type stubKey struct {
 
 var _ TupleSource = (*stubSource)(nil)
 
+// Lookup holds mu for the whole call, which the contract's "never call back in" allows.
 func (s *stubSource) Lookup(ctx context.Context, reqs []LookupRequest, yield func(int, LookupResult) bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	for i, req := range reqs {
 		if err := ctx.Err(); err != nil {
 			return err
