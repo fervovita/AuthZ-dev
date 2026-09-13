@@ -58,8 +58,7 @@ func ComputedUserset(rel RelationID) Rewrite {
 	return Rewrite{Op: OpComputedUserset, Relation: rel}
 }
 
-// TupleToUserset returns the arrow rewrite.
-// Build rejects it until the source can enumerate a tupleset's subjects.
+// TupleToUserset returns the arrow rewrite, tupleset->rel.
 func TupleToUserset(tupleset, rel RelationID) Rewrite {
 	return Rewrite{Op: OpTupleToUserset, Tupleset: tupleset, Relation: rel}
 }
@@ -198,7 +197,7 @@ func (b *SchemaBuilder) Build() (*Schema, error) {
 		errs = append(errs, b.checkShape(ref, rw, true)...)
 		errs = append(errs, b.checkAllowed(ref, rw)...)
 
-		collectEdges(ref, rw, false, &edges)
+		b.collectEdges(ref, rw, false, &edges)
 		collectStoredEdges(ref, b.allowed[ref], &edges)
 	}
 
@@ -278,7 +277,7 @@ func (b *SchemaBuilder) checkShape(ref RelationRef, rw Rewrite, top bool) []erro
 		}
 
 	case OpTupleToUserset:
-		errs = append(errs, fmt.Errorf("%w: %+v: %s", ErrUnsupportedOp, ref, rw.Op))
+		errs = append(errs, b.checkArrow(ref, rw)...)
 
 	case OpUnion, OpIntersection:
 		if rw.Relation != NoRelation || rw.Tupleset != NoRelation {
@@ -307,6 +306,60 @@ func (b *SchemaBuilder) checkShape(ref RelationRef, rw Rewrite, top bool) []erro
 	}
 
 	return errs
+}
+
+// checkArrow validates an arrow: its tupleset is a relation naming objects, and one of their types defines the target.
+func (b *SchemaBuilder) checkArrow(ref RelationRef, rw Rewrite) []error {
+	var errs []error
+
+	if len(rw.Children) != 0 {
+		errs = append(errs, fmt.Errorf("%w: %+v: tuple_to_userset takes only a tupleset and a relation", ErrSchemaInvalid, ref))
+	}
+
+	if rw.Tupleset == NoRelation || rw.Relation == NoRelation {
+		return append(errs, fmt.Errorf("%w: %+v: tuple_to_userset needs a tupleset and a relation", ErrSchemaInvalid, ref))
+	}
+
+	tupleset := RelationRef{Type: ref.Type, Relation: rw.Tupleset}
+
+	ts, ok := b.rewrites[tupleset]
+	if !ok {
+		return append(errs, fmt.Errorf("%w: %+v refers to undefined %+v", ErrSchemaInvalid, ref, tupleset))
+	}
+
+	if ts.Op != OpThis {
+		return append(errs, fmt.Errorf("%w: %+v: tupleset %+v is a permission and stores nothing to follow",
+			ErrSchemaInvalid, ref, tupleset))
+	}
+
+	// A userset or a wildcard names no single object to follow.
+	for _, st := range b.allowed[tupleset] {
+		if st.Relation != NoRelation || st.Wildcard {
+			errs = append(errs, fmt.Errorf("%w: %+v: tupleset %+v accepts %+v, but an arrow follows objects only",
+				ErrSchemaInvalid, ref, tupleset, st))
+		}
+	}
+
+	if len(b.arrowTargets(tupleset, rw.Relation)) == 0 {
+		errs = append(errs, fmt.Errorf("%w: %+v: relation %d is not defined on any type %+v accepts",
+			ErrSchemaInvalid, ref, rw.Relation, tupleset))
+	}
+
+	return errs
+}
+
+// arrowTargets lists rel on each type the tupleset accepts that defines it.
+func (b *SchemaBuilder) arrowTargets(tupleset RelationRef, rel RelationID) []RelationRef {
+	var out []RelationRef
+
+	for _, st := range b.allowed[tupleset] {
+		target := RelationRef{Type: st.Type, Relation: rel}
+		if _, ok := b.rewrites[target]; ok {
+			out = append(out, target)
+		}
+	}
+
+	return out
 }
 
 // checkAllowed validates a relation's accepted subject types.
@@ -364,7 +417,7 @@ type edge struct {
 
 // collectEdges walks a rewrite, recording which relations it depends on and whether
 // the dependency crosses an exclusion's subtract side.
-func collectEdges(from RelationRef, rw Rewrite, negated bool, out *[]edge) {
+func (b *SchemaBuilder) collectEdges(from RelationRef, rw Rewrite, negated bool, out *[]edge) {
 	switch rw.Op {
 	case OpThis:
 		// A relation's dependencies come from its accepted types, not its rewrite.
@@ -378,17 +431,23 @@ func collectEdges(from RelationRef, rw Rewrite, negated bool, out *[]edge) {
 
 	case OpExclusion:
 		if len(rw.Children) == 2 {
-			collectEdges(from, rw.Children[0], negated, out)
-			collectEdges(from, rw.Children[1], true, out)
+			b.collectEdges(from, rw.Children[0], negated, out)
+			b.collectEdges(from, rw.Children[1], true, out)
 		}
 
 	case OpUnion, OpIntersection:
 		for _, child := range rw.Children {
-			collectEdges(from, child, negated, out)
+			b.collectEdges(from, child, negated, out)
 		}
 
 	case OpTupleToUserset:
-		// Rejected by checkShape; no edge to draw without the target's type.
+		// The tupleset is read as well, so under a subtract it matters as much as where it leads.
+		tupleset := RelationRef{Type: from.Type, Relation: rw.Tupleset}
+		*out = append(*out, edge{from: from, to: tupleset, negated: negated})
+
+		for _, target := range b.arrowTargets(tupleset, rw.Relation) {
+			*out = append(*out, edge{from: from, to: target, negated: negated})
+		}
 
 	default:
 	}

@@ -209,13 +209,17 @@ func internType(t *testing.T, d *Dictionary, name string) TypeID {
 	return typ
 }
 
-// toRewrite reads the case format: a bare relation name is a leaf, and any/all/exclude are the combinators.
+// toRewrite reads the case format: a relation name or "tupleset->relation" is a leaf, and any/all/exclude are the combinators.
 // A permission cannot read stored tuples, so there is no "this" to write.
 func toRewrite(t *testing.T, d *Dictionary, v any) Rewrite {
 	t.Helper()
 
 	switch node := v.(type) {
 	case string:
+		if tupleset, rel, ok := strings.Cut(node, "->"); ok {
+			return TupleToUserset(internRelation(t, d, tupleset), internRelation(t, d, rel))
+		}
+
 		return ComputedUserset(internRelation(t, d, node))
 
 	case map[string]any:

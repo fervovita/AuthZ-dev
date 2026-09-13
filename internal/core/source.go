@@ -21,6 +21,12 @@ type LookupResult struct {
 	Usersets []SubjectRef // entries to descend into, such as team:eng#member
 }
 
+// SubjectsRequest asks for the subjects stored on a relation, which an arrow follows.
+type SubjectsRequest struct {
+	Object   ObjectRef
+	Relation RelationID
+}
+
 // WildcardRequest asks whether a relation is granted to a whole subject type.
 type WildcardRequest struct {
 	Object      ObjectRef
@@ -36,6 +42,10 @@ type TupleSource interface {
 	// Usersets is valid only until yield returns, and yield may run under the source's locks:
 	// copy what you keep, never call back in.
 	Lookup(ctx context.Context, reqs []LookupRequest, yield func(i int, res LookupResult) bool) error
+
+	// Subjects answers reqs with the subjects stored on each relation, under Lookup's rules for yield and lifetime.
+	// Wildcards are HasWildcard's to answer and need not appear.
+	Subjects(ctx context.Context, reqs []SubjectsRequest, yield func(i int, subjects []SubjectRef) bool) error
 
 	// HasWildcard reports, per request by index, whether a wildcard tuple grants the relation to the whole of SubjectType.
 	// out must be at least as long as reqs, and every entry is overwritten so a reused buffer shows no stale true.

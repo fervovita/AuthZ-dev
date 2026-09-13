@@ -10,9 +10,10 @@ import (
 
 // Interned ids the evaluator tests share.
 const (
-	tDoc  TypeID = 1
-	tTeam TypeID = 2
-	tUser TypeID = 3
+	tDoc    TypeID = 1
+	tTeam   TypeID = 2
+	tUser   TypeID = 3
+	tFolder TypeID = 4
 
 	rViewer RelationID = 1
 	rOwner  RelationID = 2
@@ -20,15 +21,19 @@ const (
 	rMember RelationID = 4
 	rView   RelationID = 5
 	rEditor RelationID = 6
+	rParent RelationID = 7
 
 	oD1    ObjectID = 1
 	oEng   ObjectID = 2
 	oAlice ObjectID = 3
 	oBob   ObjectID = 4
+	oF1    ObjectID = 5
+	oF2    ObjectID = 6
 )
 
-func docRel(rel RelationID) RelationRef  { return RelationRef{Type: tDoc, Relation: rel} }
-func teamRel(rel RelationID) RelationRef { return RelationRef{Type: tTeam, Relation: rel} }
+func docRel(rel RelationID) RelationRef    { return RelationRef{Type: tDoc, Relation: rel} }
+func teamRel(rel RelationID) RelationRef   { return RelationRef{Type: tTeam, Relation: rel} }
+func folderRel(rel RelationID) RelationRef { return RelationRef{Type: tFolder, Relation: rel} }
 
 // view = (viewer | owner) - banned.
 // viewer accepts every subject shape, so acceptance is never what decides a shared test's answer.
@@ -56,6 +61,8 @@ func validSchema(t *testing.T) *Schema {
 
 func doc(id ObjectID) ObjectRef         { return ObjectRef{Type: tDoc, ID: id} }
 func team(id ObjectID) ObjectRef        { return ObjectRef{Type: tTeam, ID: id} }
+func folder(id ObjectID) ObjectRef      { return ObjectRef{Type: tFolder, ID: id} }
+func object(o ObjectRef) SubjectRef     { return SubjectRef{Type: o.Type, ID: o.ID} }
 func user(id ObjectID) SubjectRef       { return SubjectRef{Type: tUser, ID: id} }
 func teamMember(id ObjectID) SubjectRef { return SubjectRef{Type: tTeam, ID: id, Relation: rMember} }
 func anyUser() SubjectRef               { return WildcardSubject(tUser) }
@@ -372,7 +379,7 @@ func TestCheckDoesNotSettleAComponentThatGrantsNothing(t *testing.T) {
 	}
 }
 
-// Memoising inside a cycle is the one part of the evaluator whose correctness is not
+// Memoizing inside a cycle is the one part of the evaluator whose correctness is not
 // visible by reading it, so it is checked against the definition instead.
 func TestCheckAgreesWithTheFixedPoint(t *testing.T) {
 	t.Parallel()
@@ -389,7 +396,7 @@ func TestCheckAgreesWithTheFixedPoint(t *testing.T) {
 		}
 	}
 
-	for seed := range 3000 {
+	for seed := range 10000 {
 		//nolint:gosec // G404: a failing case has to be reproducible from its seed
 		rnd := rand.New(rand.NewPCG(uint64(seed), 0x5eed))
 
@@ -417,14 +424,24 @@ func randomSchema(t *testing.T, rnd *rand.Rand, rels []RelationID) *Schema {
 	// At least one relation, or nothing stores anything and every answer is false.
 	stored := 1 + rnd.IntN(len(rels)-1)
 
+	var tuplesets []RelationID
+
 	for i, rel := range rels {
-		if i < stored {
-			b.Relation(teamRel(rel), randomTypes(rnd, rels)...)
+		if i >= stored {
+			b.Permission(teamRel(rel), randomRewrite(rnd, rels, tuplesets, 2))
 
 			continue
 		}
 
-		b.Permission(teamRel(rel), randomRewrite(rnd, rels, 2))
+		// An arrow needs a tupleset naming objects only, which a random subset of every shape rarely is.
+		if rnd.IntN(3) == 0 {
+			b.Relation(teamRel(rel), randomObjectTypes(rnd)...)
+			tuplesets = append(tuplesets, rel)
+
+			continue
+		}
+
+		b.Relation(teamRel(rel), randomTypes(rnd, rels)...)
 	}
 
 	s, err := b.Build()
@@ -438,7 +455,7 @@ func randomSchema(t *testing.T, rnd *rand.Rand, rels []RelationID) *Schema {
 // randomTypes draws from exactly what randomTuples writes, and takes a subset, so tuples the
 // relation does not accept land on the generated path rather than only in a hand-written case.
 func randomTypes(rnd *rand.Rand, rels []RelationID) []SubjectType {
-	all := []SubjectType{DirectType(tUser), WildcardType(tUser)}
+	all := []SubjectType{DirectType(tUser), WildcardType(tUser), DirectType(tTeam)}
 	for _, rel := range rels {
 		all = append(all, UsersetType(tTeam, rel))
 	}
@@ -455,16 +472,30 @@ func randomTypes(rnd *rand.Rand, rels []RelationID) []SubjectType {
 	return out
 }
 
+// randomObjectTypes shapes a tupleset: teams, which define every relation an arrow can name,
+// and sometimes users, which define none and have to be passed over.
+func randomObjectTypes(rnd *rand.Rand) []SubjectType {
+	if rnd.IntN(2) == 0 {
+		return []SubjectType{DirectType(tTeam), DirectType(tUser)}
+	}
+
+	return []SubjectType{DirectType(tTeam)}
+}
+
 // Exclusion is left out: stratification already forbids it inside a cycle, and a naive
 // iteration is only a fixed point while every operator is monotone.
-func randomRewrite(rnd *rand.Rand, rels []RelationID, budget int) Rewrite {
+func randomRewrite(rnd *rand.Rand, rels, tuplesets []RelationID, budget int) Rewrite {
 	if budget == 0 || rnd.IntN(3) == 0 {
+		if len(tuplesets) > 0 && rnd.IntN(2) == 0 {
+			return TupleToUserset(tuplesets[rnd.IntN(len(tuplesets))], rels[rnd.IntN(len(rels))])
+		}
+
 		return ComputedUserset(rels[rnd.IntN(len(rels))])
 	}
 
 	children := []Rewrite{
-		randomRewrite(rnd, rels, budget-1),
-		randomRewrite(rnd, rels, budget-1),
+		randomRewrite(rnd, rels, tuplesets, budget-1),
+		randomRewrite(rnd, rels, tuplesets, budget-1),
 	}
 
 	if rnd.IntN(2) == 0 {
@@ -481,12 +512,14 @@ func randomTuples(rnd *rand.Rand, objs []ObjectRef, rels []RelationID, subj Subj
 		for _, rel := range rels {
 			k := stubKey{Object: o, Relation: rel}
 
-			for range rnd.IntN(3) {
-				switch rnd.IntN(5) {
+			for range rnd.IntN(6) {
+				switch rnd.IntN(7) {
 				case 0:
 					tuples[k] = append(tuples[k], subj)
 				case 1:
 					tuples[k] = append(tuples[k], WildcardSubject(subj.Type))
+				case 2, 3:
+					tuples[k] = append(tuples[k], object(objs[rnd.IntN(len(objs))]))
 				default:
 					other := objs[rnd.IntN(len(objs))]
 					tuples[k] = append(tuples[k], SubjectRef{
@@ -539,6 +572,21 @@ func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj Subj
 	case OpComputedUserset:
 		return held[memoKey{Object: obj, Relation: rw.Relation}]
 
+	case OpTupleToUserset:
+		ref := RelationRef{Type: obj.Type, Relation: rw.Tupleset}
+
+		for _, st := range tuples[stubKey{obj, rw.Tupleset}] {
+			if st.Wildcard || st.Relation != NoRelation || !s.Allows(ref, DirectType(st.Type)) {
+				continue
+			}
+
+			if held[memoKey{Object: ObjectRef{Type: st.Type, ID: st.ID}, Relation: rw.Relation}] {
+				return true
+			}
+		}
+
+		return false
+
 	case OpUnion:
 		for _, c := range rw.Children {
 			if entails(t, s, tuples, subj, held, c, obj, rel) {
@@ -557,7 +605,7 @@ func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj Subj
 
 		return true
 
-	case OpExclusion, OpTupleToUserset:
+	case OpExclusion:
 		t.Fatalf("the reference does not model %s", rw.Op)
 	}
 
@@ -938,6 +986,129 @@ func TestCheckIgnoresSubjectsTheRelationNoLongerAccepts(t *testing.T) {
 	})
 }
 
+// document and folder alike: view = viewer | parent->view.
+func arrowSchema(t *testing.T) *Schema {
+	t.Helper()
+
+	s, err := NewSchemaBuilder().
+		Relation(docRel(rViewer), DirectType(tUser)).
+		Relation(docRel(rParent), DirectType(tFolder)).
+		Permission(docRel(rView), Union(ComputedUserset(rViewer), TupleToUserset(rParent, rView))).
+		Relation(folderRel(rViewer), DirectType(tUser)).
+		Relation(folderRel(rParent), DirectType(tFolder)).
+		Permission(folderRel(rView), Union(ComputedUserset(rViewer), TupleToUserset(rParent, rView))).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	return s
+}
+
+func TestCheckArrow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("up a hierarchy", func(t *testing.T) {
+		t.Parallel()
+
+		// d1 sits in f1, which sits in f2, and alice views f2.
+		e := engine(t, arrowSchema(t), store().
+			add(doc(oD1), rParent, object(folder(oF1))).
+			add(folder(oF1), rParent, object(folder(oF2))).
+			add(folder(oF2), rViewer, user(oAlice)).
+			source())
+
+		res := check(t, e, doc(oD1), rView, user(oAlice))
+		if !res.Allowed {
+			t.Fatal("alice views a folder two levels up")
+		}
+
+		if n := len(reachableNodes(res.Proof)); n != len(res.Proof.Nodes) {
+			t.Errorf("%d of %d nodes reachable from the root:\n%s",
+				n, len(res.Proof.Nodes), formatProof(res.Proof))
+		}
+
+		if check(t, e, doc(oD1), rView, user(oBob)).Allowed {
+			t.Error("bob views nothing above d1")
+		}
+	})
+
+	t.Run("folders naming each other", func(t *testing.T) {
+		t.Parallel()
+
+		e := engine(t, arrowSchema(t), store().
+			add(folder(oF1), rParent, object(folder(oF2))).
+			add(folder(oF2), rParent, object(folder(oF1))).
+			add(folder(oF2), rViewer, user(oBob)).
+			source())
+
+		if !check(t, e, folder(oF1), rView, user(oBob)).Allowed {
+			t.Error("bob views f1's parent")
+		}
+
+		if check(t, e, folder(oF1), rView, user(oAlice)).Allowed {
+			t.Error("alice views neither folder")
+		}
+	})
+}
+
+// An arrow follows objects. Anything else its tupleset holds is passed over, neither descended into nor failed on.
+func TestCheckArrowSkipsWhatItCannotFollow(t *testing.T) {
+	t.Parallel()
+
+	// view = parent->view, where parent accepts folders and users and only a folder defines view.
+	// A team defines view too, so following one would grant.
+	s, err := NewSchemaBuilder().
+		Relation(docRel(rParent), DirectType(tFolder), DirectType(tUser)).
+		Permission(docRel(rView), TupleToUserset(rParent, rView)).
+		Relation(folderRel(rView), DirectType(tUser)).
+		Relation(teamRel(rView), DirectType(tUser)).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	withParent := func(parents ...SubjectRef) *stubSource {
+		b := store().
+			add(folder(oF1), rView, user(oAlice)).
+			add(team(oEng), rView, user(oAlice))
+
+		for _, p := range parents {
+			b.add(doc(oD1), rParent, p)
+		}
+
+		return b.source()
+	}
+
+	for _, c := range []struct {
+		name    string
+		src     TupleSource
+		allowed bool
+
+		// view's rewrite is the arrow, so the root node's children are what it descended into.
+		followed int
+	}{
+		{"a type the tupleset does not accept", withParent(object(team(oEng))), false, 0},
+		{"a userset", withParent(SubjectRef{Type: tFolder, ID: oF1, Relation: rView}), false, 0},
+		{"a wildcard", &wildcardSubjectsSource{stubSource: withParent()}, false, 0},
+		{"a type that does not define the relation", withParent(user(oBob), object(folder(oF1))), true, 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			res := check(t, engine(t, s, c.src), doc(oD1), rView, user(oAlice))
+
+			if res.Allowed != c.allowed {
+				t.Errorf("Allowed = %v; want %v", res.Allowed, c.allowed)
+			}
+
+			if got := len(res.Proof.Nodes[0].Children); got != c.followed {
+				t.Errorf("the arrow descended into %d objects; want %d:\n%s", got, c.followed, formatProof(res.Proof))
+			}
+		})
+	}
+}
+
 // The relation the caller asked about is a different matter: that one is their mistake.
 func TestCheckUndefinedRootRelationStillErrors(t *testing.T) {
 	t.Parallel()
@@ -1011,9 +1182,13 @@ func TestCheckIsSafeForConcurrentUse(t *testing.T) {
 	t.Parallel()
 
 	s, err := NewSchemaBuilder().
+		Relation(docRel(rParent), DirectType(tFolder)).
 		Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
 		Relation(docRel(rOwner), UsersetType(tTeam, rMember)).
-		Permission(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+		Permission(docRel(rView), Union(
+			TupleToUserset(rParent, rViewer), ComputedUserset(rViewer), ComputedUserset(rOwner),
+		)).
+		Relation(folderRel(rViewer), DirectType(tUser)).
 		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
@@ -1021,7 +1196,9 @@ func TestCheckIsSafeForConcurrentUse(t *testing.T) {
 	}
 
 	// A component worth settling, so the memo, the stack and the recorder are all in play.
+	// d1's folder grants nobody, so every check reads the tupleset before a group grants.
 	src := store().
+		add(doc(oD1), rParent, object(folder(oF1))).
 		add(doc(oD1), rViewer, teamMember(oEng)).
 		add(team(oEng), rMember, teamMember(oAlice)).
 		add(team(oEng), rMember, teamMember(oD1)).
@@ -1102,6 +1279,10 @@ func (ctxBlindSource) Lookup(_ context.Context, reqs []LookupRequest, yield func
 	return nil
 }
 
+func (ctxBlindSource) Subjects(context.Context, []SubjectsRequest, func(int, []SubjectRef) bool) error {
+	return nil
+}
+
 func (ctxBlindSource) HasWildcard(_ context.Context, reqs []WildcardRequest, out []bool) error {
 	for i := range reqs {
 		out[i] = true
@@ -1168,28 +1349,19 @@ func TestCheckMemoizesAnAllow(t *testing.T) {
 	}
 }
 
-// Build rejects these, so reaching them means a Schema was assembled some other way.
+// Build rejects an unknown operator, so reaching one means a Schema was assembled some other way.
 // The evaluator refuses rather than silently denying.
-func TestCheckRefusesOperatorsBuildWouldReject(t *testing.T) {
+func TestCheckRefusesAnUnknownOperator(t *testing.T) {
 	t.Parallel()
 
-	for name, rw := range map[string]Rewrite{
-		"tuple_to_userset": TupleToUserset(rOwner, rViewer),
-		"unknown":          {Op: Op(99)},
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+	s := &Schema{rewrites: map[RelationRef]Rewrite{docRel(rViewer): {Op: Op(99)}}}
 
-			s := &Schema{rewrites: map[RelationRef]Rewrite{docRel(rViewer): rw}}
+	_, err := engine(t, s, store().source()).Check(t.Context(), CheckRequest{
+		Object: doc(oD1), Relation: rViewer, Subject: user(oAlice),
+	})
 
-			_, err := engine(t, s, store().source()).Check(t.Context(), CheckRequest{
-				Object: doc(oD1), Relation: rViewer, Subject: user(oAlice),
-			})
-
-			if !errors.Is(err, ErrUnsupportedOp) {
-				t.Errorf("err = %v; want ErrUnsupportedOp", err)
-			}
-		})
+	if !errors.Is(err, ErrUnsupportedOp) {
+		t.Errorf("err = %v; want ErrUnsupportedOp", err)
 	}
 }
 
@@ -1262,6 +1434,41 @@ func TestCheckPropagatesSourceErrorFromCombinators(t *testing.T) {
 			t.Errorf("err = %v; want the source error", err)
 		}
 	})
+
+	// view = parent->view: parent fails in the arrow itself, and folder#view in the object it descends into.
+	for _, c := range []struct {
+		name   string
+		failOn RelationID
+	}{
+		{"arrow tupleset", rParent},
+		{"arrow descent", rView},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := NewSchemaBuilder().
+				Relation(docRel(rParent), DirectType(tFolder)).
+				Permission(docRel(rView), TupleToUserset(rParent, rView)).
+				Relation(folderRel(rView), DirectType(tUser)).
+				Build()
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+
+			src := &relFailSource{
+				stubSource: store().add(doc(oD1), rParent, object(folder(oF1))).source(),
+				failOn:     c.failOn,
+				err:        sentinel,
+			}
+
+			_, err = engine(t, s, src).Check(t.Context(), CheckRequest{
+				Object: doc(oD1), Relation: rView, Subject: user(oAlice),
+			})
+			if !errors.Is(err, sentinel) {
+				t.Errorf("err = %v; want the source error", err)
+			}
+		})
+	}
 }
 
 // Settling re-walks from no node in particular, so recording it would litter the proof with nodes nothing points at.
@@ -1386,6 +1593,19 @@ func (o *oddUsersetSource) Lookup(_ context.Context, reqs []LookupRequest, yield
 	return nil
 }
 
+// wildcardSubjectsSource answers Subjects with folder:*, which the contract lets a source include.
+type wildcardSubjectsSource struct{ *stubSource }
+
+func (w *wildcardSubjectsSource) Subjects(_ context.Context, reqs []SubjectsRequest, yield func(int, []SubjectRef) bool) error {
+	for i := range reqs {
+		if !yield(i, []SubjectRef{WildcardSubject(tFolder)}) {
+			return nil
+		}
+	}
+
+	return nil
+}
+
 // relFailSource fails only the questions about one relation.
 type relFailSource struct {
 	*stubSource
@@ -1402,6 +1622,16 @@ func (f *relFailSource) Lookup(ctx context.Context, reqs []LookupRequest, yield 
 	}
 
 	return f.stubSource.Lookup(ctx, reqs, yield)
+}
+
+func (f *relFailSource) Subjects(ctx context.Context, reqs []SubjectsRequest, yield func(int, []SubjectRef) bool) error {
+	for _, req := range reqs {
+		if req.Relation == f.failOn {
+			return f.err
+		}
+	}
+
+	return f.stubSource.Subjects(ctx, reqs, yield)
 }
 
 func (f *relFailSource) HasWildcard(ctx context.Context, reqs []WildcardRequest, out []bool) error {
