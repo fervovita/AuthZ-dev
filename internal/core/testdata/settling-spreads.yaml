@@ -2,46 +2,46 @@
 name: a component found through a chain of answers
 schema:
   team:
-    viewer:
-      any:
-        - any: [member, viewer]
-        - this
-    owner:
-      all: [member, banned]
-    banned:
-      all:
-        - all: [viewer, member]
-        - all: [viewer, this]
-    member:
-      any:
-        - all: [this, viewer]
-        - all: [this, banned]
+    relations:
+      viewer_d: [user, "team#viewer", "team#owner", "team#banned"]
+      banned_d: [user, "team#viewer", "team#member", "team#banned", "team#owner"]
+      member_d: ["user:*", "team#member", "team#banned"]
+    permissions:
+      viewer:
+        any:
+          - any: [member, viewer]
+          - viewer_d
+      owner:
+        all: [member, banned]
+      banned:
+        all:
+          - all: [viewer, member]
+          - all: [viewer, banned_d]
+      member:
+        any:
+          - all: [member_d, viewer]
+          - all: [member_d, banned]
 tuples:
-  - team:1#banned@user:alice
-  - team:1#member@user:*
-  - team:1#member@team:3#banned
-  - team:2#viewer@team:1#banned
-  - team:2#viewer@user:alice
-  - team:2#owner@team:2#banned
-  - team:2#banned@team:4#viewer
-  - team:2#banned@team:3#viewer
-  - team:2#member@team:4#member
-  - team:2#member@user:*
-  - team:3#viewer@user:alice
-  - team:3#viewer@team:3#viewer
-  - team:3#owner@team:4#banned
-  - team:3#owner@team:4#viewer
-  - team:3#banned@team:1#member
-  - team:3#banned@team:2#banned
-  - team:3#member@user:*
-  - team:3#member@team:1#member
-  - team:4#viewer@team:4#owner
-  - team:4#viewer@team:3#banned
-  - team:4#owner@user:alice
-  - team:4#owner@user:alice
-  - team:4#banned@team:2#owner
-  - team:4#banned@team:3#owner
-  - team:4#member@team:2#banned
+  - team:1#banned_d@user:alice
+  - team:1#member_d@user:*
+  - team:1#member_d@team:3#banned
+  - team:2#viewer_d@team:1#banned
+  - team:2#viewer_d@user:alice
+  - team:2#banned_d@team:4#viewer
+  - team:2#banned_d@team:3#viewer
+  - team:2#member_d@team:4#member
+  - team:2#member_d@user:*
+  - team:3#viewer_d@user:alice
+  - team:3#viewer_d@team:3#viewer
+  - team:3#banned_d@team:1#member
+  - team:3#banned_d@team:2#banned
+  - team:3#member_d@user:*
+  - team:3#member_d@team:1#member
+  - team:4#viewer_d@team:4#owner
+  - team:4#viewer_d@team:3#banned
+  - team:4#banned_d@team:2#owner
+  - team:4#banned_d@team:3#owner
+  - team:4#member_d@team:2#banned
 checks:
   - check: team:4#banned@user:alice
     expect: true
@@ -54,5 +54,5 @@ checks:
   - check: team:1#member@user:alice
     expect: false
     why: >-
-      the wildcard on team:1#member is read by member's this, but member also needs viewer
-      or banned on team:1, and neither holds
+      the wildcard on team:1#member_d grants, but member also needs viewer or banned
+      on team:1, and neither holds

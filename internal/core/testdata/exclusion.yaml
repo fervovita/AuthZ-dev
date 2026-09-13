@@ -1,17 +1,20 @@
 name: exclusion, including against a wildcard grant
 schema:
   document:
-    viewer: this
-    owner: this
-    banned: this
-    view:
-      exclude:
-        base: {any: [viewer, owner]}
-        subtract: banned
-    strict:
-      all: [viewer, owner]
+    relations:
+      viewer: [user, "user:*"]
+      owner: [user]
+      banned: [user, "team#member"]
+    permissions:
+      view:
+        exclude:
+          base: {any: [viewer, owner]}
+          subtract: banned
+      strict:
+        all: [viewer, owner]
   team:
-    member: this
+    relations:
+      member: [user]
 tuples:
   - document:d1#viewer@user:alice
   - document:d1#banned@user:alice

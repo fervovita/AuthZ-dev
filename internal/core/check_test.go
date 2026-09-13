@@ -30,21 +30,22 @@ const (
 func docRel(rel RelationID) RelationRef  { return RelationRef{Type: tDoc, Relation: rel} }
 func teamRel(rel RelationID) RelationRef { return RelationRef{Type: tTeam, Relation: rel} }
 
-// document: viewer, owner and banned are this.
 // view = (viewer | owner) - banned.
-// team: member = this.
+// viewer accepts every subject shape, so acceptance is never what decides a shared test's answer.
 func validSchema(t *testing.T) *Schema {
 	t.Helper()
 
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rOwner), This()).
-		Define(docRel(rBanned), This()).
-		Define(docRel(rView), Exclusion(
+		Relation(docRel(rViewer),
+			DirectType(tUser), WildcardType(tUser),
+			DirectType(tTeam), WildcardType(tTeam), UsersetType(tTeam, rMember)).
+		Relation(docRel(rOwner), DirectType(tUser)).
+		Relation(docRel(rBanned), DirectType(tUser)).
+		Permission(docRel(rView), Exclusion(
 			Union(ComputedUserset(rViewer), ComputedUserset(rOwner)),
 			ComputedUserset(rBanned),
 		)).
-		Define(teamRel(rMember), This()).
+		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -207,9 +208,9 @@ func TestCheckIntersection(t *testing.T) {
 	t.Parallel()
 
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rOwner), This()).
-		Define(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+		Relation(docRel(rViewer), DirectType(tUser)).
+		Relation(docRel(rOwner), DirectType(tUser)).
+		Permission(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rOwner))).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -262,10 +263,10 @@ func TestCheckAnswersARecursiveComponentConsistently(t *testing.T) {
 
 	// view = viewer AND editor
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rEditor), This()).
-		Define(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rEditor))).
-		Define(teamRel(rMember), This()).
+		Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
+		Relation(docRel(rEditor), UsersetType(tTeam, rMember)).
+		Permission(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rEditor))).
+		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -313,10 +314,10 @@ func TestCheckReusesASettledComponent(t *testing.T) {
 	t.Parallel()
 
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rOwner), This()).
-		Define(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
-		Define(teamRel(rMember), This()).
+		Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
+		Relation(docRel(rOwner), UsersetType(tTeam, rMember)).
+		Permission(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -349,7 +350,9 @@ func TestCheckReusesASettledComponent(t *testing.T) {
 func TestCheckDoesNotSettleAComponentThatGrantsNothing(t *testing.T) {
 	t.Parallel()
 
-	s, err := NewSchemaBuilder().Define(teamRel(rMember), This()).Build()
+	s, err := NewSchemaBuilder().
+		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
+		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -394,7 +397,7 @@ func TestCheckAgreesWithTheFixedPoint(t *testing.T) {
 		tuples := randomTuples(rnd, objs, rels, subj)
 		want := fixedPoint(t, s, tuples, subj, pairs)
 
-		// A key on the stack is already being computed, so the descent cannot outrun them.
+		// A frame is entered only for a key not seen yet, so nesting cannot exceed the key count.
 		e := engine(t, s, &stubSource{subjects: tuples}, WithMaxDepth(len(pairs)+1))
 
 		for _, p := range pairs {
@@ -405,12 +408,23 @@ func TestCheckAgreesWithTheFixedPoint(t *testing.T) {
 	}
 }
 
+// The leading relations store tuples and the rest are permissions over them.
 func randomSchema(t *testing.T, rnd *rand.Rand, rels []RelationID) *Schema {
 	t.Helper()
 
 	b := NewSchemaBuilder()
-	for _, rel := range rels {
-		b.Define(teamRel(rel), randomRewrite(rnd, rels, 2))
+
+	// At least one relation, or nothing stores anything and every answer is false.
+	stored := 1 + rnd.IntN(len(rels)-1)
+
+	for i, rel := range rels {
+		if i < stored {
+			b.Relation(teamRel(rel), randomTypes(rnd, rels)...)
+
+			continue
+		}
+
+		b.Permission(teamRel(rel), randomRewrite(rnd, rels, 2))
 	}
 
 	s, err := b.Build()
@@ -421,14 +435,30 @@ func randomSchema(t *testing.T, rnd *rand.Rand, rels []RelationID) *Schema {
 	return s
 }
 
+// randomTypes draws from exactly what randomTuples writes, and takes a subset, so tuples the
+// relation does not accept land on the generated path rather than only in a hand-written case.
+func randomTypes(rnd *rand.Rand, rels []RelationID) []SubjectType {
+	all := []SubjectType{DirectType(tUser), WildcardType(tUser)}
+	for _, rel := range rels {
+		all = append(all, UsersetType(tTeam, rel))
+	}
+
+	// One is picked outright, because a relation accepting nothing is rejected.
+	out := []SubjectType{all[rnd.IntN(len(all))]}
+
+	for _, st := range all {
+		if st != out[0] && rnd.IntN(2) == 0 {
+			out = append(out, st)
+		}
+	}
+
+	return out
+}
+
 // Exclusion is left out: stratification already forbids it inside a cycle, and a naive
 // iteration is only a fixed point while every operator is monotone.
 func randomRewrite(rnd *rand.Rand, rels []RelationID, budget int) Rewrite {
 	if budget == 0 || rnd.IntN(3) == 0 {
-		if rnd.IntN(2) == 0 {
-			return This()
-		}
-
 		return ComputedUserset(rels[rnd.IntN(len(rels))])
 	}
 
@@ -485,7 +515,7 @@ func fixedPoint(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj S
 				continue
 			}
 
-			if v := entails(t, tuples, subj, held, rw, p.Object, p.Relation); v != held[p] {
+			if v := entails(t, s, tuples, subj, held, rw, p.Object, p.Relation); v != held[p] {
 				held[p] = v
 				changed = true
 			}
@@ -495,21 +525,23 @@ func fixedPoint(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj S
 	return held
 }
 
-func entails(t *testing.T, tuples map[stubKey][]SubjectRef, subj SubjectRef,
+func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj SubjectRef,
 	held map[memoKey]bool, rw Rewrite, obj ObjectRef, rel RelationID,
 ) bool {
 	t.Helper()
 
 	switch rw.Op {
 	case OpThis:
-		return storedEntails(tuples[stubKey{obj, rel}], subj, held)
+		ref := RelationRef{Type: obj.Type, Relation: rel}
+
+		return storedEntails(s, ref, tuples[stubKey{obj, rel}], subj, held)
 
 	case OpComputedUserset:
 		return held[memoKey{Object: obj, Relation: rw.Relation}]
 
 	case OpUnion:
 		for _, c := range rw.Children {
-			if entails(t, tuples, subj, held, c, obj, rel) {
+			if entails(t, s, tuples, subj, held, c, obj, rel) {
 				return true
 			}
 		}
@@ -518,7 +550,7 @@ func entails(t *testing.T, tuples map[stubKey][]SubjectRef, subj SubjectRef,
 
 	case OpIntersection:
 		for _, c := range rw.Children {
-			if !entails(t, tuples, subj, held, c, obj, rel) {
+			if !entails(t, s, tuples, subj, held, c, obj, rel) {
 				return false
 			}
 		}
@@ -534,17 +566,27 @@ func entails(t *testing.T, tuples map[stubKey][]SubjectRef, subj SubjectRef,
 	return false
 }
 
-func storedEntails(stored []SubjectRef, subj SubjectRef, held map[memoKey]bool) bool {
-	for _, s := range stored {
+// A tuple the relation does not accept grants nobody, which the reference has to say too or
+// it would only agree with the evaluator on schemas the generator happened to write tightly.
+func storedEntails(s *Schema, ref RelationRef, stored []SubjectRef,
+	subj SubjectRef, held map[memoKey]bool,
+) bool {
+	for _, st := range stored {
 		switch {
-		case s.Wildcard:
-			if subj.Relation == NoRelation && s.Type == subj.Type {
+		case st.Wildcard:
+			if subj.Relation == NoRelation && st.Type == subj.Type && s.Allows(ref, WildcardType(st.Type)) {
 				return true
 			}
-		case s == subj:
-			return true
-		case s.Relation != NoRelation:
-			if held[memoKey{Object: ObjectRef{Type: s.Type, ID: s.ID}, Relation: s.Relation}] {
+		case st == subj:
+			if s.Allows(ref, SubjectType{Type: st.Type, Relation: st.Relation}) {
+				return true
+			}
+		case st.Relation != NoRelation:
+			if !s.Allows(ref, UsersetType(st.Type, st.Relation)) {
+				continue
+			}
+
+			if held[memoKey{Object: ObjectRef{Type: st.Type, ID: st.ID}, Relation: st.Relation}] {
 				return true
 			}
 		}
@@ -594,9 +636,9 @@ func TestCheckMemoizesRepeatedRelation(t *testing.T) {
 
 	// view = viewer | owner, and owner is defined as viewer, so viewer is reached twice.
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rOwner), ComputedUserset(rViewer)).
-		Define(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+		Relation(docRel(rViewer), DirectType(tUser)).
+		Permission(docRel(rOwner), ComputedUserset(rViewer)).
+		Permission(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -653,10 +695,10 @@ func TestCheckProofRecordsTriedBranches(t *testing.T) {
 	t.Parallel()
 
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rOwner), This()).
-		Define(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
-		Define(teamRel(rMember), This()).
+		Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
+		Relation(docRel(rOwner), DirectType(tUser)).
+		Permission(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+		Relation(teamRel(rMember), DirectType(tUser)).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -793,38 +835,114 @@ func TestCheckWildcardDoesNotCoverAUsersetSubject(t *testing.T) {
 	}
 }
 
-// Erroring on a dangling userset would turn every check on the object into a failure instead of a denial.
-func TestCheckSkipsUsersetsTheSchemaDoesNotDefine(t *testing.T) {
+// A stored tuple can outlive the subject type that admitted it,
+// which is the whole reason acceptance is asked at evaluation and not only at write.
+func TestCheckIgnoresSubjectsTheRelationNoLongerAccepts(t *testing.T) {
 	t.Parallel()
 
-	// The schema has no team#member at all, but a tuple still points at one.
-	s, err := NewSchemaBuilder().Define(docRel(rViewer), This()).Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	t.Run("wildcard", func(t *testing.T) {
+		t.Parallel()
 
-	src := store().
-		add(doc(oD1), rViewer, teamMember(oEng)).
-		add(team(oEng), rMember, user(oAlice)).
-		source()
+		s, err := NewSchemaBuilder().Relation(docRel(rViewer), DirectType(tUser)).Build()
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
 
-	res, err := engine(t, s, src).Check(t.Context(), CheckRequest{
-		Object: doc(oD1), Relation: rViewer, Subject: user(oAlice),
+		log := &callLog{stubSource: store().add(doc(oD1), rViewer, anyUser()).source()}
+
+		if check(t, engine(t, s, log), doc(oD1), rViewer, user(oAlice)).Allowed {
+			t.Error("user:* granted on a relation that accepts only a concrete user")
+		}
+
+		if got := countCalls(log.calls, "wildcard"); got != 0 {
+			t.Errorf("asked the wildcard bucket %d times; the accepted types rule it out first", got)
+		}
 	})
-	if err != nil {
-		t.Fatalf("Check: %v; a dangling userset is a dead branch, not a failure", err)
-	}
 
-	if res.Allowed {
-		t.Error("an undefined relation granted; it can hold nobody")
-	}
+	t.Run("direct subject", func(t *testing.T) {
+		t.Parallel()
+
+		// Teams are accepted, users are not, and both are stored.
+		s, err := NewSchemaBuilder().Relation(docRel(rViewer), DirectType(tTeam)).Build()
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+
+		e := engine(t, s, store().
+			add(doc(oD1), rViewer, user(oAlice)).
+			add(doc(oD1), rViewer, SubjectRef{Type: tTeam, ID: oEng}).
+			source())
+
+		if check(t, e, doc(oD1), rViewer, user(oAlice)).Allowed {
+			t.Error("a user granted on a relation that accepts only teams")
+		}
+
+		if !check(t, e, doc(oD1), rViewer, SubjectRef{Type: tTeam, ID: oEng}).Allowed {
+			t.Error("the accepted type must still grant")
+		}
+	})
+
+	t.Run("userset", func(t *testing.T) {
+		t.Parallel()
+
+		// team#member is accepted, team#owner is not, and both are stored.
+		s, err := NewSchemaBuilder().
+			Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
+			Relation(teamRel(rMember), DirectType(tUser)).
+			Relation(teamRel(rOwner), DirectType(tUser)).
+			Build()
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+
+		e := engine(t, s, store().
+			add(doc(oD1), rViewer, SubjectRef{Type: tTeam, ID: oEng, Relation: rOwner}).
+			add(team(oEng), rOwner, user(oAlice)).
+			add(doc(oD1), rViewer, teamMember(oEng)).
+			add(team(oEng), rMember, user(oBob)).
+			source())
+
+		if check(t, e, doc(oD1), rViewer, user(oAlice)).Allowed {
+			t.Error("descended into team#owner, which viewer does not accept")
+		}
+
+		if !check(t, e, doc(oD1), rViewer, user(oBob)).Allowed {
+			t.Error("the accepted userset must still be followed")
+		}
+	})
+
+	// The schema may have dropped the relation outright rather than just the type.
+	t.Run("userset on a relation the schema no longer defines", func(t *testing.T) {
+		t.Parallel()
+
+		s, err := NewSchemaBuilder().Relation(docRel(rViewer), DirectType(tUser)).Build()
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+
+		src := store().
+			add(doc(oD1), rViewer, teamMember(oEng)).
+			add(team(oEng), rMember, user(oAlice)).
+			source()
+
+		res, err := engine(t, s, src).Check(t.Context(), CheckRequest{
+			Object: doc(oD1), Relation: rViewer, Subject: user(oAlice),
+		})
+		if err != nil {
+			t.Fatalf("Check: %v; a tuple outliving its type is a dead branch, not a failure", err)
+		}
+
+		if res.Allowed {
+			t.Error("an undefined relation granted; it can hold nobody")
+		}
+	})
 }
 
 // The relation the caller asked about is a different matter: that one is their mistake.
 func TestCheckUndefinedRootRelationStillErrors(t *testing.T) {
 	t.Parallel()
 
-	s, err := NewSchemaBuilder().Define(docRel(rViewer), This()).Build()
+	s, err := NewSchemaBuilder().Relation(docRel(rViewer), DirectType(tUser)).Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -893,10 +1011,10 @@ func TestCheckIsSafeForConcurrentUse(t *testing.T) {
 	t.Parallel()
 
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rOwner), This()).
-		Define(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
-		Define(teamRel(rMember), This()).
+		Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
+		Relation(docRel(rOwner), UsersetType(tTeam, rMember)).
+		Permission(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -1022,9 +1140,9 @@ func TestCheckMemoizesAnAllow(t *testing.T) {
 
 	// view needs both operands, and owner is defined as viewer, so viewer is evaluated once and reused.
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rOwner), ComputedUserset(rViewer)).
-		Define(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+		Relation(docRel(rViewer), DirectType(tUser)).
+		Permission(docRel(rOwner), ComputedUserset(rViewer)).
+		Permission(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rOwner))).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -1127,9 +1245,9 @@ func TestCheckPropagatesSourceErrorFromCombinators(t *testing.T) {
 		t.Parallel()
 
 		s, err := NewSchemaBuilder().
-			Define(docRel(rViewer), This()).
-			Define(docRel(rOwner), This()).
-			Define(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+			Relation(docRel(rViewer), DirectType(tUser)).
+			Relation(docRel(rOwner), DirectType(tUser)).
+			Permission(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rOwner))).
 			Build()
 		if err != nil {
 			t.Fatalf("Build: %v", err)
@@ -1151,10 +1269,10 @@ func TestCheckProofStaysAWholeTreeAcrossAComponent(t *testing.T) {
 	t.Parallel()
 
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(docRel(rEditor), This()).
-		Define(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rEditor))).
-		Define(teamRel(rMember), This()).
+		Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
+		Relation(docRel(rEditor), UsersetType(tTeam, rMember)).
+		Permission(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rEditor))).
+		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -1197,8 +1315,8 @@ func TestCheckPropagatesSourceErrorFromSettling(t *testing.T) {
 	sentinel := errors.New("source is unreachable")
 
 	s, err := NewSchemaBuilder().
-		Define(docRel(rViewer), This()).
-		Define(teamRel(rMember), This()).
+		Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
+		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)

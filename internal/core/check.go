@@ -345,8 +345,14 @@ func (r *run) rewrite(rw Rewrite, obj ObjectRef, rel RelationID) (bool, int, err
 	return allowed, idx, nil
 }
 
-// this reads the relation's own tuples: the wildcard bucket first, then the subject
-// itself, then the usersets it would have to belong to.
+// allows reports whether the relation accepts st as a subject.
+// A tuple outside the set grants nobody rather than erroring, which would fail every check on the object.
+func (r *run) allows(obj ObjectRef, rel RelationID, st SubjectType) bool {
+	return r.engine.schema.Allows(RelationRef{Type: obj.Type, Relation: rel}, st)
+}
+
+// this reads the relation's own tuples: the wildcard bucket first, then the subject itself,
+// then the usersets it would have to belong to.
 func (r *run) this(obj ObjectRef, rel RelationID, idx int) (bool, error) {
 	granted, err := r.wildcardGrants(obj, rel)
 	if err != nil {
@@ -374,12 +380,13 @@ func (r *run) this(obj ObjectRef, rel RelationID, idx int) (bool, error) {
 		return false, err
 	}
 
-	if direct {
+	// A rejected direct hit does not end the search: a userset may still grant.
+	if direct && r.allows(obj, rel, SubjectType{Type: r.subject.Type, Relation: r.subject.Relation}) {
 		return true, nil
 	}
 
 	for _, us := range usersets {
-		if !r.followable(us) {
+		if !r.followable(obj, rel, us) {
 			continue
 		}
 
@@ -405,6 +412,10 @@ func (r *run) wildcardGrants(obj ObjectRef, rel RelationID) (bool, error) {
 		return false, nil
 	}
 
+	if !r.allows(obj, rel, WildcardType(r.subject.Type)) {
+		return false, nil
+	}
+
 	// The bucket is always local, so asking first answers a public resource off-network.
 	r.wildcardReq[0] = WildcardRequest{Object: obj, Relation: rel, SubjectType: r.subject.Type}
 	if err := r.engine.source.HasWildcard(r.ctx, r.wildcardReq[:], r.wildcardOut[:]); err != nil {
@@ -414,16 +425,14 @@ func (r *run) wildcardGrants(obj ObjectRef, rel RelationID) (bool, error) {
 	return r.wildcardOut[0], nil
 }
 
-// followable reports whether an entry from Usersets names a relation to descend into.
-// A tuple outliving the relation it names is a dead branch, not an error: it grants nobody.
-func (r *run) followable(us SubjectRef) bool {
+// followable reports whether an entry from Usersets names a userset to descend into.
+// Build proves an accepted userset type names a defined relation, so accepting it is the whole test.
+func (r *run) followable(obj ObjectRef, rel RelationID, us SubjectRef) bool {
 	if us.Relation == NoRelation || us.Wildcard {
 		return false
 	}
 
-	_, ok := r.engine.schema.Rewrite(RelationRef{Type: us.Type, Relation: us.Relation})
-
-	return ok
+	return r.allows(obj, rel, UsersetType(us.Type, us.Relation))
 }
 
 func (r *run) union(rw Rewrite, obj ObjectRef, rel RelationID, idx int) (bool, error) {

@@ -20,10 +20,17 @@ var caseFS embed.FS
 // caseFile is one scenario: a schema, the tuples stored under it, and the checks
 // that schema is supposed to answer a certain way.
 type caseFile struct {
-	Name   string                    `yaml:"name"`
-	Schema map[string]map[string]any `yaml:"schema"`
-	Tuples []string                  `yaml:"tuples"`
-	Checks []checkCase               `yaml:"checks"`
+	Name   string             `yaml:"name"`
+	Schema map[string]typeDef `yaml:"schema"`
+	Tuples []string           `yaml:"tuples"`
+	Checks []checkCase        `yaml:"checks"`
+}
+
+// typeDef is one object type. Relations store tuples and list the subjects they accept.
+// Permissions are computed and store none.
+type typeDef struct {
+	Relations   map[string][]string `yaml:"relations"`
+	Permissions map[string]any      `yaml:"permissions"`
 }
 
 type checkCase struct {
@@ -130,27 +137,24 @@ func outcomeOf(allowed bool) Outcome {
 	return OutcomeDenied
 }
 
-func buildSchema(t *testing.T, d *Dictionary, defs map[string]map[string]any) *Schema {
+func buildSchema(t *testing.T, d *Dictionary, defs map[string]typeDef) *Schema {
 	t.Helper()
 
 	b := NewSchemaBuilder()
 
-	// Validate first: ids are never reused, so an illegal name interned here would hold
-	// its id for the life of the dictionary.
-	for typName, rels := range defs {
-		if !ValidType(typName) {
-			t.Fatalf("type %q is not a legal identifier", typName)
-		}
+	for typName, def := range defs {
+		typ := internType(t, d, typName)
 
-		typ, err := d.InternType(typName)
-		if err != nil {
-			t.Fatalf("intern type %q: %v", typName, err)
-		}
-
-		for relName, body := range rels {
+		for relName, accepted := range def.Relations {
 			rel := internRelation(t, d, relName)
 
-			b.Define(RelationRef{Type: typ, Relation: rel}, toRewrite(t, d, body))
+			b.Relation(RelationRef{Type: typ, Relation: rel}, toSubjectTypes(t, d, accepted)...)
+		}
+
+		for relName, body := range def.Permissions {
+			rel := internRelation(t, d, relName)
+
+			b.Permission(RelationRef{Type: typ, Relation: rel}, toRewrite(t, d, body))
 		}
 	}
 
@@ -162,16 +166,56 @@ func buildSchema(t *testing.T, d *Dictionary, defs map[string]map[string]any) *S
 	return s
 }
 
-// toRewrite reads the case format: "this" and a bare relation name are leaves, and any/all/exclude are the combinators.
+func toSubjectTypes(t *testing.T, d *Dictionary, accepted []string) []SubjectType {
+	t.Helper()
+
+	out := make([]SubjectType, 0, len(accepted))
+	for _, s := range accepted {
+		out = append(out, toSubjectType(t, d, s))
+	}
+
+	return out
+}
+
+// toSubjectType reads one accepted subject: "user", "user:*", or "team#member".
+func toSubjectType(t *testing.T, d *Dictionary, s string) SubjectType {
+	t.Helper()
+
+	if typName, relName, ok := strings.Cut(s, "#"); ok {
+		return UsersetType(internType(t, d, typName), internRelation(t, d, relName))
+	}
+
+	if typName, ok := strings.CutSuffix(s, ":"+WildcardMarker); ok {
+		return WildcardType(internType(t, d, typName))
+	}
+
+	return DirectType(internType(t, d, s))
+}
+
+// Validating before interning matters: ids are never reused, so an illegal name interned
+// here would hold its id for the life of the dictionary.
+func internType(t *testing.T, d *Dictionary, name string) TypeID {
+	t.Helper()
+
+	if !ValidType(name) {
+		t.Fatalf("type %q is not a legal identifier", name)
+	}
+
+	typ, err := d.InternType(name)
+	if err != nil {
+		t.Fatalf("intern type %q: %v", name, err)
+	}
+
+	return typ
+}
+
+// toRewrite reads the case format: a bare relation name is a leaf, and any/all/exclude are the combinators.
+// A permission cannot read stored tuples, so there is no "this" to write.
 func toRewrite(t *testing.T, d *Dictionary, v any) Rewrite {
 	t.Helper()
 
 	switch node := v.(type) {
 	case string:
-		if node == "this" {
-			return This()
-		}
-
 		return ComputedUserset(internRelation(t, d, node))
 
 	case map[string]any:

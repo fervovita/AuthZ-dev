@@ -1,9 +1,11 @@
 name: usersets and nested groups
 schema:
   document:
-    viewer: this
+    relations:
+      viewer: [user, "user:*", "team:*", "team#member"]
   team:
-    member: this
+    relations:
+      member: [user, "team#member"]
 tuples:
   - document:d1#viewer@team:eng#member
   - team:eng#member@user:alice

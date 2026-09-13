@@ -2,31 +2,36 @@
 name: settling pulls in relations the traversal never reached
 schema:
   team:
-    viewer:
-      all:
-        - any: [owner, banned]
-        - all: [this, banned]
-    owner:
-      all:
-        - all: [banned, viewer]
-        - all: [viewer, member]
-    banned:
-      any:
-        - viewer
-        - any: [owner, this]
-    member:
-      all:
-        - this
-        - any: [this, viewer]
+    relations:
+      viewer_d: [user, "team#owner"]
+      banned_d: [user, "team#owner", "team#banned"]
+      member_d: [user, "team#member", "team#banned"]
+    permissions:
+      viewer:
+        all:
+          - any: [owner, banned]
+          - all: [viewer_d, banned]
+      owner:
+        all:
+          - all: [banned, viewer]
+          - all: [viewer, member]
+      banned:
+        any:
+          - viewer
+          - any: [owner, banned_d]
+      member:
+        all:
+          - member_d
+          - any: [member_d, viewer]
 tuples:
-  - team:1#viewer@team:2#owner
-  - team:1#banned@user:alice
-  - team:1#member@team:2#banned
-  - team:1#member@user:alice
-  - team:2#viewer@user:alice
-  - team:2#banned@team:1#owner
-  - team:2#banned@team:1#banned
-  - team:2#member@team:1#member
+  - team:1#viewer_d@team:2#owner
+  - team:1#banned_d@user:alice
+  - team:1#member_d@team:2#banned
+  - team:1#member_d@user:alice
+  - team:2#viewer_d@user:alice
+  - team:2#banned_d@team:1#owner
+  - team:2#banned_d@team:1#banned
+  - team:2#member_d@team:1#member
 checks:
   - check: team:1#owner@user:alice
     expect: true
