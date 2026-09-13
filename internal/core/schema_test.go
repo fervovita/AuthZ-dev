@@ -86,13 +86,6 @@ func TestSchemaBuildRejectsShape(t *testing.T) {
 			ErrSchemaInvalid,
 		},
 		{
-			"tuple_to_userset",
-			func(b *SchemaBuilder) *SchemaBuilder {
-				return b.Permission(docRel(rView), TupleToUserset(rOwner, rViewer))
-			},
-			ErrUnsupportedOp,
-		},
-		{
 			"computed_userset with operands",
 			func(b *SchemaBuilder) *SchemaBuilder {
 				return b.Permission(docRel(rView), Rewrite{
@@ -180,6 +173,135 @@ func TestSchemaBuildRejectsShape(t *testing.T) {
 	}
 }
 
+// The message is checked as well as the sentinel: an arrow broken one way can trip another rule too,
+// and the case would pass for the wrong reason.
+func TestSchemaBuildRejectsArrows(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		def  func(*SchemaBuilder) *SchemaBuilder
+		want string
+	}{
+		{
+			"without a tupleset",
+			func(b *SchemaBuilder) *SchemaBuilder {
+				return b.Permission(docRel(rView), Rewrite{Op: OpTupleToUserset, Relation: rViewer})
+			},
+			"needs a tupleset and a relation",
+		},
+		{
+			"without a relation",
+			func(b *SchemaBuilder) *SchemaBuilder {
+				return b.Permission(docRel(rView), Rewrite{Op: OpTupleToUserset, Tupleset: rParent})
+			},
+			"needs a tupleset and a relation",
+		},
+		{
+			"with operands",
+			func(b *SchemaBuilder) *SchemaBuilder {
+				rw := TupleToUserset(rParent, rViewer)
+				rw.Children = []Rewrite{ComputedUserset(rParent)}
+
+				return b.Permission(docRel(rView), rw)
+			},
+			"takes only a tupleset and a relation",
+		},
+		{
+			"over an undefined tupleset",
+			func(b *SchemaBuilder) *SchemaBuilder {
+				return b.Permission(docRel(rView), TupleToUserset(rOwner, rViewer))
+			},
+			"refers to undefined",
+		},
+		{
+			"over a permission",
+			func(b *SchemaBuilder) *SchemaBuilder {
+				return b.
+					Permission(docRel(rOwner), ComputedUserset(rParent)).
+					Permission(docRel(rView), TupleToUserset(rOwner, rViewer))
+			},
+			"is a permission",
+		},
+		{
+			"over a tupleset accepting a userset",
+			func(b *SchemaBuilder) *SchemaBuilder {
+				return b.
+					Relation(docRel(rOwner), DirectType(tFolder), UsersetType(tFolder, rViewer)).
+					Permission(docRel(rView), TupleToUserset(rOwner, rViewer))
+			},
+			"follows objects only",
+		},
+		{
+			"over a tupleset accepting a wildcard",
+			func(b *SchemaBuilder) *SchemaBuilder {
+				return b.
+					Relation(docRel(rOwner), DirectType(tFolder), WildcardType(tFolder)).
+					Permission(docRel(rView), TupleToUserset(rOwner, rViewer))
+			},
+			"follows objects only",
+		},
+		{
+			"to a relation no accepted type defines",
+			func(b *SchemaBuilder) *SchemaBuilder {
+				return b.Permission(docRel(rView), TupleToUserset(rParent, rMember))
+			},
+			"is not defined on any type",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			// document#parent names folders, and folder#viewer is what an arrow over it reaches.
+			b := NewSchemaBuilder().
+				Relation(docRel(rParent), DirectType(tFolder)).
+				Relation(folderRel(rViewer), DirectType(tUser))
+
+			_, err := c.def(b).Build()
+			if !errors.Is(err, ErrSchemaInvalid) {
+				t.Fatalf("err = %v; want ErrSchemaInvalid", err)
+			}
+
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("err = %q; want it to say %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestSchemaAcceptsArrows(t *testing.T) {
+	t.Parallel()
+
+	// Only one type has to define the relation; the user a parent tuple names is skipped when evaluated.
+	t.Run("beside a type that does not define the relation", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := NewSchemaBuilder().
+			Relation(docRel(rParent), DirectType(tFolder), DirectType(tUser)).
+			Relation(folderRel(rViewer), DirectType(tUser)).
+			Permission(docRel(rView), TupleToUserset(rParent, rViewer)).
+			Build()
+		if err != nil {
+			t.Errorf("Build: %v", err)
+		}
+	})
+
+	t.Run("recursing up a hierarchy", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := NewSchemaBuilder().
+			Relation(folderRel(rParent), DirectType(tFolder)).
+			Relation(folderRel(rViewer), DirectType(tUser)).
+			Permission(folderRel(rView), Union(ComputedUserset(rViewer), TupleToUserset(rParent, rView))).
+			Build()
+		if err != nil {
+			t.Errorf("Build: %v; positive recursion through an arrow is legal", err)
+		}
+	})
+}
+
 func TestSchemaBuildRejectsDuplicateDefinition(t *testing.T) {
 	t.Parallel()
 
@@ -244,6 +366,26 @@ func TestSchemaRejectsRecursionThroughExclusion(t *testing.T) {
 			Relation(docRel(rViewer), DirectType(tUser)).
 			Relation(docRel(rBanned), DirectType(tUser), UsersetType(tDoc, rView)).
 			Permission(docRel(rView), Exclusion(ComputedUserset(rViewer), ComputedUserset(rBanned))).
+			Build()
+
+		if !errors.Is(err, ErrSchemaInvalid) {
+			t.Fatalf("err = %v; want ErrSchemaInvalid", err)
+		}
+
+		if !strings.Contains(err.Error(), "reaches back") {
+			t.Errorf("err = %q; want it to name the cycle", err)
+		}
+	})
+
+	// view = viewer - parent->banned, and banned = view: a parent's view subtracts from its child's.
+	t.Run("through an arrow on the subtract side", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := NewSchemaBuilder().
+			Relation(docRel(rViewer), DirectType(tUser)).
+			Relation(docRel(rParent), DirectType(tDoc)).
+			Permission(docRel(rBanned), ComputedUserset(rView)).
+			Permission(docRel(rView), Exclusion(ComputedUserset(rViewer), TupleToUserset(rParent, rBanned))).
 			Build()
 
 		if !errors.Is(err, ErrSchemaInvalid) {
@@ -325,6 +467,29 @@ func TestSchemaExclusionReachableFollowsAcceptedTypes(t *testing.T) {
 	}
 
 	want := []RelationRef{docRel(rBanned), teamRel(rOwner), teamRel(rMember)}
+	if got := s.ExclusionReachable(); !slices.Equal(got, want) {
+		t.Errorf("ExclusionReachable = %+v; want %+v", got, want)
+	}
+}
+
+// An arrow under a subtract reads its tupleset as well as the relation it leads to,
+// and a stale parent hides a ban just as a stale ban does.
+func TestSchemaExclusionReachableFollowsArrows(t *testing.T) {
+	t.Parallel()
+
+	// view = viewer - parent->banned; a folder's ban may name a group.
+	s, err := NewSchemaBuilder().
+		Relation(docRel(rViewer), DirectType(tUser)).
+		Relation(docRel(rParent), DirectType(tFolder)).
+		Relation(folderRel(rBanned), DirectType(tUser), UsersetType(tTeam, rMember)).
+		Relation(teamRel(rMember), DirectType(tUser)).
+		Permission(docRel(rView), Exclusion(ComputedUserset(rViewer), TupleToUserset(rParent, rBanned))).
+		Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	want := []RelationRef{docRel(rParent), teamRel(rMember), folderRel(rBanned)}
 	if got := s.ExclusionReachable(); !slices.Equal(got, want) {
 		t.Errorf("ExclusionReachable = %+v; want %+v", got, want)
 	}

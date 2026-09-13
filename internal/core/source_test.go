@@ -67,6 +67,32 @@ func (s *stubSource) classify(req LookupRequest) LookupResult {
 	return res
 }
 
+// Subjects shares Lookup's buffer and lock, so an answer kept past yield is overwritten by either.
+func (s *stubSource) Subjects(ctx context.Context, reqs []SubjectsRequest, yield func(int, []SubjectRef) bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i, req := range reqs {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		s.scratch = s.scratch[:0]
+
+		for _, subj := range s.subjects[stubKey(req)] {
+			if !subj.Wildcard {
+				s.scratch = append(s.scratch, subj)
+			}
+		}
+
+		if !yield(i, s.scratch) {
+			return nil
+		}
+	}
+
+	return nil
+}
+
 func (s *stubSource) HasWildcard(ctx context.Context, reqs []WildcardRequest, out []bool) error {
 	if len(out) < len(reqs) {
 		return ErrShortBuffer
@@ -280,6 +306,29 @@ func TestLookupHonoursCancellation(t *testing.T) {
 	})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("err = %v; want context.Canceled", err)
+	}
+}
+
+// An arrow reads these, so a userset must still come back for the evaluator to refuse,
+// while a wildcard stays with HasWildcard.
+func TestSubjectsLeavesWildcardsToHasWildcard(t *testing.T) {
+	t.Parallel()
+
+	src, doc, viewer, alice := newStub()
+
+	reqs := []SubjectsRequest{{doc, viewer}, {doc, viewer}}
+
+	// Asked twice, so a buffer that is not reset shows up as a doubled answer.
+	err := src.Subjects(t.Context(), reqs, func(i int, subjects []SubjectRef) bool {
+		want := []SubjectRef{alice, {Type: 2, ID: 2, Relation: 2}}
+		if !slices.Equal(subjects, want) {
+			t.Errorf("request %d: subjects = %+v; want %+v", i, subjects, want)
+		}
+
+		return true
+	})
+	if err != nil {
+		t.Fatalf("Subjects: %v", err)
 	}
 }
 

@@ -155,6 +155,7 @@ type run struct {
 	wildcardReq [1]WildcardRequest
 	wildcardOut [1]bool
 	lookupReq   [1]LookupRequest
+	subjectsReq [1]SubjectsRequest
 }
 
 // relation evaluates one relation on one object, memoized for the whole check.
@@ -331,7 +332,7 @@ func (r *run) rewrite(rw Rewrite, obj ObjectRef, rel RelationID) (bool, int, err
 	case OpExclusion:
 		allowed, err = r.exclusion(rw, obj, rel, idx)
 	case OpTupleToUserset:
-		err = fmt.Errorf("%w: %s", ErrUnsupportedOp, rw.Op)
+		allowed, err = r.arrow(rw, obj, idx)
 	default:
 		err = fmt.Errorf("%w: %s", ErrUnsupportedOp, rw.Op)
 	}
@@ -433,6 +434,46 @@ func (r *run) followable(obj ObjectRef, rel RelationID, us SubjectRef) bool {
 	}
 
 	return r.allows(obj, rel, UsersetType(us.Type, us.Relation))
+}
+
+// arrow asks for rw.Relation on each object the tupleset names.
+// Build proves only that some accepted type defines the relation, so a type that does not is skipped, not an error.
+func (r *run) arrow(rw Rewrite, obj ObjectRef, idx int) (bool, error) {
+	var subjects []SubjectRef
+
+	r.subjectsReq[0] = SubjectsRequest{Object: obj, Relation: rw.Tupleset}
+
+	err := r.engine.source.Subjects(r.ctx, r.subjectsReq[:], func(_ int, res []SubjectRef) bool {
+		subjects = slices.Clone(res)
+
+		return true
+	})
+	if err != nil {
+		return false, err
+	}
+
+	for _, s := range subjects {
+		if !r.allows(obj, rw.Tupleset, SubjectType{Type: s.Type, Relation: s.Relation, Wildcard: s.Wildcard}) {
+			continue
+		}
+
+		if _, ok := r.engine.schema.Rewrite(RelationRef{Type: s.Type, Relation: rw.Relation}); !ok {
+			continue
+		}
+
+		allowed, child, err := r.relation(ObjectRef{Type: s.Type, ID: s.ID}, rw.Relation)
+		r.rec.addChild(idx, child)
+
+		if err != nil {
+			return false, err
+		}
+
+		if allowed {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 func (r *run) union(rw Rewrite, obj ObjectRef, rel RelationID, idx int) (bool, error) {

@@ -1,0 +1,81 @@
+name: arrows up a folder hierarchy, against wildcards and exclusion
+schema:
+  document:
+    relations:
+      parent: [folder, workspace]
+      viewer: [user]
+    permissions:
+      view:
+        exclude:
+          base: {any: [viewer, parent->view]}
+          subtract: parent->blocked
+  folder:
+    relations:
+      parent: [folder]
+      viewer: [user, "user:*", "team#member"]
+      banned: [user, "team#member"]
+    permissions:
+      view: {any: [viewer, parent->view]}
+      blocked: {any: [banned, parent->blocked]}
+  workspace:
+    relations:
+      member: [user]
+    permissions:
+      view: member
+  team:
+    relations:
+      member: [user]
+tuples:
+  - document:spec#parent@folder:eng
+  - folder:eng#parent@folder:root
+  - folder:eng#banned@user:mallory
+  - folder:root#viewer@team:staff#member
+  - folder:root#banned@team:contractors#member
+  - team:staff#member@user:alice
+  - team:staff#member@user:mallory
+  - team:contractors#member@user:carl
+  - document:pub#parent@folder:public
+  - folder:public#parent@folder:root
+  - folder:public#viewer@user:*
+  - document:notes#parent@workspace:home
+  - workspace:home#member@user:bob
+  - document:lost#parent@folder:ring1
+  - folder:ring1#parent@folder:ring2
+  - folder:ring2#parent@folder:ring1
+  - folder:ring2#viewer@user:erin
+checks:
+  - check: document:spec#view@user:alice
+    expect: true
+    why: a group views the root folder, two arrows up
+
+  - check: document:spec#view@user:mallory
+    expect: false
+    why: the same grant, taken back by a ban on the folder in between
+
+  - check: document:spec#view@user:dave
+    expect: false
+    why: no folder above grants dave
+
+  - check: folder:eng#view@user:mallory
+    expect: true
+    why: only a document subtracts the ban, so the folder itself still grants
+
+  - check: document:pub#view@user:dave
+    expect: true
+    why: user:* on the parent covers anyone, and nothing above blocks dave
+
+  - check: document:pub#view@user:carl
+    expect: false
+    why: the wildcard grants, and a ban through a group two folders up takes it back
+
+  - check: document:notes#view@user:bob
+    expect: true
+    why: a workspace defines view but not blocked, so the subtract side passes it over
+
+  - check: document:lost#view@user:erin
+    expect: true
+    why: folders naming each other as parent still reach the one that grants
+
+  - check: document:lost#view@user:alice
+    expect: false
+    why: folders naming each other as parent still terminate when neither grants
