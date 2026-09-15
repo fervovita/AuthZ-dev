@@ -2,11 +2,13 @@ package core
 
 import (
 	"math/rand/v2"
+	"slices"
 	"testing"
 )
 
-// Memoizing inside a cycle is the one part of the evaluator whose correctness is not
-// visible by reading it, so it is checked against the definition instead.
+// Memoizing inside a cycle is the one part of the evaluator whose correctness is not visible by reading it,
+// so it is checked against the definition instead.
+// Which schemas Build accepts is part of that definition, so its verdict on each one is checked as well.
 func TestCheckAgreesWithTheFixedPoint(t *testing.T) {
 	t.Parallel()
 
@@ -22,13 +24,24 @@ func TestCheckAgreesWithTheFixedPoint(t *testing.T) {
 		}
 	}
 
-	for seed := range 10000 {
+	for seed := range 20000 {
 		//nolint:gosec // G404: a failing case has to be reproducible from its seed
 		rnd := rand.New(rand.NewPCG(uint64(seed), 0x5eed))
 
-		s := randomSchema(t, rnd, rels)
+		defs := randomDefinitions(rnd, rels)
+		level, stratified := strata(dependencies(defs))
+
+		s, err := defs.build()
+		if (err == nil) != stratified {
+			t.Fatalf("seed %d: Build: %v; the definitions stratify: %v", seed, err, stratified)
+		}
+
+		if err != nil {
+			continue
+		}
+
 		tuples := randomTuples(rnd, objs, rels, subj)
-		want := fixedPoint(t, s, tuples, subj, pairs)
+		want := fixedPoint(t, defs, tuples, subj, pairs, level)
 
 		// A frame is entered only for a key not seen yet, so nesting cannot exceed the key count.
 		e := engine(t, s, &stubSource{subjects: tuples}, WithMaxDepth(len(pairs)+1))
@@ -41,11 +54,34 @@ func TestCheckAgreesWithTheFixedPoint(t *testing.T) {
 	}
 }
 
-// The leading relations store tuples and the rest are permissions over them.
-func randomSchema(t *testing.T, rnd *rand.Rand, rels []RelationID) *Schema {
-	t.Helper()
+// definitions is a generated schema as written, so the reference never reads it through Build.
+type definitions struct {
+	rewrites map[RelationRef]Rewrite
+	allowed  map[RelationRef][]SubjectType
+}
 
+func (d definitions) build() (*Schema, error) {
 	b := NewSchemaBuilder()
+
+	for ref, rw := range d.rewrites {
+		if rw.Op == OpThis {
+			b.Relation(ref, d.allowed[ref]...)
+
+			continue
+		}
+
+		b.Permission(ref, rw)
+	}
+
+	return b.Build()
+}
+
+// The leading relations store tuples and the rest are permissions over them.
+func randomDefinitions(rnd *rand.Rand, rels []RelationID) definitions {
+	d := definitions{
+		rewrites: make(map[RelationRef]Rewrite, len(rels)),
+		allowed:  make(map[RelationRef][]SubjectType, len(rels)),
+	}
 
 	// At least one relation, or nothing stores anything and every answer is false.
 	stored := 1 + rnd.IntN(len(rels)-1)
@@ -53,29 +89,28 @@ func randomSchema(t *testing.T, rnd *rand.Rand, rels []RelationID) *Schema {
 	var tuplesets []RelationID
 
 	for i, rel := range rels {
+		ref := teamRel(rel)
+
 		if i >= stored {
-			b.Permission(teamRel(rel), randomRewrite(rnd, rels, tuplesets, 2))
+			d.rewrites[ref] = randomRewrite(rnd, rels, tuplesets, 2)
 
 			continue
 		}
 
+		d.rewrites[ref] = This()
+
 		// An arrow needs a tupleset naming objects only, which a random subset of every shape rarely is.
 		if rnd.IntN(3) == 0 {
-			b.Relation(teamRel(rel), randomObjectTypes(rnd)...)
+			d.allowed[ref] = randomObjectTypes(rnd)
 			tuplesets = append(tuplesets, rel)
 
 			continue
 		}
 
-		b.Relation(teamRel(rel), randomTypes(rnd, rels)...)
+		d.allowed[ref] = randomTypes(rnd, rels)
 	}
 
-	s, err := b.Build()
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	return s
+	return d
 }
 
 // randomTypes draws from exactly what randomTuples writes, and takes a subset, so tuples the
@@ -108,8 +143,8 @@ func randomObjectTypes(rnd *rand.Rand) []SubjectType {
 	return []SubjectType{DirectType(tTeam)}
 }
 
-// Exclusion is left out: stratification already forbids it inside a cycle, and a naive
-// iteration is only a fixed point while every operator is monotone.
+// Exclusion is drawn as often as the other combinators, loops through it included:
+// Build has to refuse those, and the test checks that it refuses exactly those.
 func randomRewrite(rnd *rand.Rand, rels, tuplesets []RelationID, budget int) Rewrite {
 	if budget == 0 || rnd.IntN(3) == 0 {
 		if len(tuplesets) > 0 && rnd.IntN(2) == 0 {
@@ -124,11 +159,14 @@ func randomRewrite(rnd *rand.Rand, rels, tuplesets []RelationID, budget int) Rew
 		randomRewrite(rnd, rels, tuplesets, budget-1),
 	}
 
-	if rnd.IntN(2) == 0 {
+	switch rnd.IntN(3) {
+	case 0:
 		return Union(children...)
+	case 1:
+		return Intersection(children...)
+	default:
+		return Exclusion(children[0], children[1])
 	}
-
-	return Intersection(children...)
 }
 
 func randomTuples(rnd *rand.Rand, objs []ObjectRef, rels []RelationID, subj SubjectRef) map[stubKey][]SubjectRef {
@@ -159,24 +197,121 @@ func randomTuples(rnd *rand.Rand, objs []ObjectRef, rels []RelationID, subj Subj
 	return tuples
 }
 
-// fixedPoint holds every key the schema entails for one subject, by iterating from nothing held until a round changes nothing.
-func fixedPoint(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj SubjectRef, pairs []memoKey) map[memoKey]bool {
+// dependency says a relation's answer reads another's; negated marks a read through a subtract side.
+type dependency struct {
+	from, to RelationRef
+	negated  bool
+}
+
+// dependencies lists every read the definitions allow, written out here rather than taken from Build,
+// so a read Build forgets is one the reference still sees.
+func dependencies(d definitions) []dependency {
+	var out []dependency
+
+	var walk func(from RelationRef, rw Rewrite, negated bool)
+
+	walk = func(from RelationRef, rw Rewrite, negated bool) {
+		switch rw.Op {
+		case OpThis:
+			// A stored userset is read for its members; the other subject shapes read nothing.
+			for _, st := range d.allowed[from] {
+				if st.Relation != NoRelation {
+					out = append(out, dependency{from, RelationRef{Type: st.Type, Relation: st.Relation}, negated})
+				}
+			}
+
+		case OpComputedUserset:
+			out = append(out, dependency{from, RelationRef{Type: from.Type, Relation: rw.Relation}, negated})
+
+		case OpTupleToUserset:
+			tupleset := RelationRef{Type: from.Type, Relation: rw.Tupleset}
+			out = append(out, dependency{from, tupleset, negated})
+
+			for _, st := range d.allowed[tupleset] {
+				out = append(out, dependency{from, RelationRef{Type: st.Type, Relation: rw.Relation}, negated})
+			}
+
+		case OpUnion, OpIntersection:
+			for _, c := range rw.Children {
+				walk(from, c, negated)
+			}
+
+		case OpExclusion:
+			walk(from, rw.Children[0], negated)
+			walk(from, rw.Children[1], true)
+		}
+	}
+
+	for ref, rw := range d.rewrites {
+		walk(ref, rw, false)
+	}
+
+	return out
+}
+
+// strata puts each relation no lower than anything it reads, and above anything it reads through a subtract.
+// It reports false when no such placement exists, which is a loop through a subtract.
+func strata(deps []dependency) (map[RelationRef]int, bool) {
+	level := make(map[RelationRef]int)
+
+	nodes := make(map[RelationRef]bool)
+	for _, dep := range deps {
+		nodes[dep.from] = true
+		nodes[dep.to] = true
+	}
+
+	// Each round settles one more hop of every chain, and without such a loop a chain has fewer hops than there are relations.
+	for range len(nodes) {
+		changed := false
+
+		for _, dep := range deps {
+			need := level[dep.to]
+			if dep.negated {
+				need++
+			}
+
+			if level[dep.from] < need {
+				level[dep.from] = need
+				changed = true
+			}
+		}
+
+		if !changed {
+			return level, true
+		}
+	}
+
+	return nil, false
+}
+
+// fixedPoint holds every key the schema entails for one subject. Each stratum is iterated from nothing held
+// until a round changes nothing, over the strata below it, which are final by then and so safe to subtract.
+func fixedPoint(t *testing.T, d definitions, tuples map[stubKey][]SubjectRef, subj SubjectRef,
+	pairs []memoKey, level map[RelationRef]int,
+) map[memoKey]bool {
 	t.Helper()
 
 	held := make(map[memoKey]bool, len(pairs))
 
-	for changed := true; changed; {
-		changed = false
+	top := 0
+	for _, l := range level {
+		top = max(top, l)
+	}
 
-		for _, p := range pairs {
-			rw, ok := s.Rewrite(RelationRef{Type: p.Object.Type, Relation: p.Relation})
-			if !ok {
-				continue
-			}
+	for stratum := 0; stratum <= top; stratum++ {
+		for changed := true; changed; {
+			changed = false
 
-			if v := entails(t, s, tuples, subj, held, rw, p.Object, p.Relation); v != held[p] {
-				held[p] = v
-				changed = true
+			for _, p := range pairs {
+				ref := RelationRef{Type: p.Object.Type, Relation: p.Relation}
+				if level[ref] != stratum {
+					continue
+				}
+
+				if !held[p] && entails(t, d, tuples, subj, held, d.rewrites[ref], p.Object, p.Relation) {
+					held[p] = true
+					changed = true
+				}
 			}
 		}
 	}
@@ -184,7 +319,7 @@ func fixedPoint(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj S
 	return held
 }
 
-func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj SubjectRef,
+func entails(t *testing.T, d definitions, tuples map[stubKey][]SubjectRef, subj SubjectRef,
 	held map[memoKey]bool, rw Rewrite, obj ObjectRef, rel RelationID,
 ) bool {
 	t.Helper()
@@ -193,16 +328,16 @@ func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj Subj
 	case OpThis:
 		ref := RelationRef{Type: obj.Type, Relation: rel}
 
-		return storedEntails(s, ref, tuples[stubKey{obj, rel}], subj, held)
+		return storedEntails(d.allowed[ref], tuples[stubKey{obj, rel}], subj, held)
 
 	case OpComputedUserset:
 		return held[memoKey{Object: obj, Relation: rw.Relation}]
 
 	case OpTupleToUserset:
-		ref := RelationRef{Type: obj.Type, Relation: rw.Tupleset}
+		accepted := d.allowed[RelationRef{Type: obj.Type, Relation: rw.Tupleset}]
 
 		for _, st := range tuples[stubKey{obj, rw.Tupleset}] {
-			if st.Wildcard || st.Relation != NoRelation || !s.Allows(ref, DirectType(st.Type)) {
+			if st.Wildcard || st.Relation != NoRelation || !slices.Contains(accepted, DirectType(st.Type)) {
 				continue
 			}
 
@@ -215,7 +350,7 @@ func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj Subj
 
 	case OpUnion:
 		for _, c := range rw.Children {
-			if entails(t, s, tuples, subj, held, c, obj, rel) {
+			if entails(t, d, tuples, subj, held, c, obj, rel) {
 				return true
 			}
 		}
@@ -224,7 +359,7 @@ func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj Subj
 
 	case OpIntersection:
 		for _, c := range rw.Children {
-			if !entails(t, s, tuples, subj, held, c, obj, rel) {
+			if !entails(t, d, tuples, subj, held, c, obj, rel) {
 				return false
 			}
 		}
@@ -232,7 +367,8 @@ func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj Subj
 		return true
 
 	case OpExclusion:
-		t.Fatalf("the reference does not model %s", rw.Op)
+		return entails(t, d, tuples, subj, held, rw.Children[0], obj, rel) &&
+			!entails(t, d, tuples, subj, held, rw.Children[1], obj, rel)
 	}
 
 	t.Fatalf("the reference does not model %s", rw.Op)
@@ -242,21 +378,19 @@ func entails(t *testing.T, s *Schema, tuples map[stubKey][]SubjectRef, subj Subj
 
 // A tuple the relation does not accept grants nobody, which the reference has to say too or
 // it would only agree with the evaluator on schemas the generator happened to write tightly.
-func storedEntails(s *Schema, ref RelationRef, stored []SubjectRef,
-	subj SubjectRef, held map[memoKey]bool,
-) bool {
+func storedEntails(accepted []SubjectType, stored []SubjectRef, subj SubjectRef, held map[memoKey]bool) bool {
 	for _, st := range stored {
 		switch {
 		case st.Wildcard:
-			if subj.Relation == NoRelation && st.Type == subj.Type && s.Allows(ref, WildcardType(st.Type)) {
+			if subj.Relation == NoRelation && st.Type == subj.Type && slices.Contains(accepted, WildcardType(st.Type)) {
 				return true
 			}
 		case st == subj:
-			if s.Allows(ref, SubjectType{Type: st.Type, Relation: st.Relation}) {
+			if slices.Contains(accepted, SubjectType{Type: st.Type, Relation: st.Relation}) {
 				return true
 			}
 		case st.Relation != NoRelation:
-			if !s.Allows(ref, UsersetType(st.Type, st.Relation)) {
+			if !slices.Contains(accepted, UsersetType(st.Type, st.Relation)) {
 				continue
 			}
 
