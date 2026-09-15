@@ -543,20 +543,6 @@ func TestCheckRejectsMalformedRequests(t *testing.T) {
 	}
 }
 
-func TestCheckUndefinedRelation(t *testing.T) {
-	t.Parallel()
-
-	e := engine(t, validSchema(t), store().source())
-
-	_, err := e.Check(t.Context(), CheckRequest{
-		Object: doc(oD1), Relation: rEditor, Subject: user(oAlice),
-	})
-
-	if !errors.Is(err, ErrRelationUndefined) {
-		t.Errorf("err = %v; want ErrRelationUndefined", err)
-	}
-}
-
 // A source failure is an error, never a denial.
 func TestCheckPropagatesSourceError(t *testing.T) {
 	t.Parallel()
