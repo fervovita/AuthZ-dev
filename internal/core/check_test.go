@@ -36,8 +36,8 @@ func folderRel(rel RelationID) RelationRef { return RelationRef{Type: tFolder, R
 
 // view = (viewer | owner) - banned.
 // viewer accepts every subject shape, so acceptance is never what decides a shared test's answer.
-func validSchema(t *testing.T) *Schema {
-	t.Helper()
+func validSchema(tb testing.TB) *Schema {
+	tb.Helper()
 
 	s, err := NewSchemaBuilder().
 		Relation(docRel(rViewer),
@@ -52,7 +52,7 @@ func validSchema(t *testing.T) *Schema {
 		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
-		t.Fatalf("Build: %v", err)
+		tb.Fatalf("Build: %v", err)
 	}
 
 	return s
@@ -80,12 +80,12 @@ func (b *storeBuilder) add(obj ObjectRef, rel RelationID, subj SubjectRef) *stor
 
 func (b *storeBuilder) source() *stubSource { return &stubSource{subjects: b.m} }
 
-func engine(t *testing.T, s *Schema, src TupleSource, opts ...Option) *Engine {
-	t.Helper()
+func engine(tb testing.TB, s *Schema, src TupleSource, opts ...Option) *Engine {
+	tb.Helper()
 
 	e, err := NewEngine(s, src, opts...)
 	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
+		tb.Fatalf("NewEngine: %v", err)
 	}
 
 	return e
@@ -708,8 +708,8 @@ func TestCheckIgnoresSubjectsTheRelationNoLongerAccepts(t *testing.T) {
 }
 
 // document and folder alike: view = viewer | parent->view.
-func arrowSchema(t *testing.T) *Schema {
-	t.Helper()
+func arrowSchema(tb testing.TB) *Schema {
+	tb.Helper()
 
 	s, err := NewSchemaBuilder().
 		Relation(docRel(rViewer), DirectType(tUser)).
@@ -720,7 +720,7 @@ func arrowSchema(t *testing.T) *Schema {
 		Permission(folderRel(rView), Union(ComputedUserset(rViewer), TupleToUserset(rParent, rView))).
 		Build()
 	if err != nil {
-		t.Fatalf("Build: %v", err)
+		tb.Fatalf("Build: %v", err)
 	}
 
 	return s
