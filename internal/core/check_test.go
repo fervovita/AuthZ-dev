@@ -36,8 +36,8 @@ func folderRel(rel RelationID) RelationRef { return RelationRef{Type: tFolder, R
 
 // view = (viewer | owner) - banned.
 // viewer accepts every subject shape, so acceptance is never what decides a shared test's answer.
-func validSchema(t *testing.T) *Schema {
-	t.Helper()
+func validSchema(tb testing.TB) *Schema {
+	tb.Helper()
 
 	s, err := NewSchemaBuilder().
 		Relation(docRel(rViewer),
@@ -52,7 +52,7 @@ func validSchema(t *testing.T) *Schema {
 		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
-		t.Fatalf("Build: %v", err)
+		tb.Fatalf("Build: %v", err)
 	}
 
 	return s
@@ -80,12 +80,12 @@ func (b *storeBuilder) add(obj ObjectRef, rel RelationID, subj SubjectRef) *stor
 
 func (b *storeBuilder) source() *stubSource { return &stubSource{subjects: b.m} }
 
-func engine(t *testing.T, s *Schema, src TupleSource, opts ...Option) *Engine {
-	t.Helper()
+func engine(tb testing.TB, s *Schema, src TupleSource, opts ...Option) *Engine {
+	tb.Helper()
 
 	e, err := NewEngine(s, src, opts...)
 	if err != nil {
-		t.Fatalf("NewEngine: %v", err)
+		tb.Fatalf("NewEngine: %v", err)
 	}
 
 	return e
@@ -178,6 +178,50 @@ func TestCheckUnionAndComputedUserset(t *testing.T) {
 
 	if !check(t, e, doc(oD1), rView, user(oAlice)).Allowed {
 		t.Error("the owner branch of the union should satisfy view")
+	}
+}
+
+// A combinator stops once its answer is decided. The answer is the same either way, so only the lookups
+// show one that kept going: view = viewer | parent->view would walk the whole hierarchy on every check.
+func TestCheckCombinatorsStopOnceDecided(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		name    string
+		rw      Rewrite
+		allowed bool
+	}{
+		{"union at a grant", Union(ComputedUserset(rViewer), ComputedUserset(rOwner)), true},
+		{"intersection at a denial", Intersection(ComputedUserset(rBanned), ComputedUserset(rEditor)), false},
+		{"exclusion when the base fails", Exclusion(ComputedUserset(rBanned), ComputedUserset(rOwner)), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			s, err := NewSchemaBuilder().
+				Relation(docRel(rViewer), DirectType(tUser)).
+				Relation(docRel(rOwner), DirectType(tUser)).
+				Relation(docRel(rBanned), DirectType(tUser)).
+				Relation(docRel(rEditor), DirectType(tUser)).
+				Permission(docRel(rView), c.rw).
+				Build()
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+
+			log := &callLog{stubSource: store().
+				add(doc(oD1), rViewer, user(oAlice)).
+				add(doc(oD1), rOwner, user(oAlice)).
+				source()}
+
+			if got := check(t, engine(t, s, log), doc(oD1), rView, user(oAlice)).Allowed; got != c.allowed {
+				t.Fatalf("Allowed = %v; want %v", got, c.allowed)
+			}
+
+			if got := countCalls(log.calls, "lookup"); got != 1 {
+				t.Errorf("%d lookups; want 1, the first operand decides", got)
+			}
+		})
 	}
 }
 
@@ -322,18 +366,20 @@ func TestCheckReusesASettledComponent(t *testing.T) {
 	s, err := NewSchemaBuilder().
 		Relation(docRel(rViewer), UsersetType(tTeam, rMember)).
 		Relation(docRel(rOwner), UsersetType(tTeam, rMember)).
-		Permission(docRel(rView), Union(ComputedUserset(rViewer), ComputedUserset(rOwner))).
+		Permission(docRel(rView), Intersection(ComputedUserset(rViewer), ComputedUserset(rOwner))).
 		Relation(teamRel(rMember), DirectType(tUser), UsersetType(tTeam, rMember)).
 		Build()
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
-	// Both branches of the union reach the same pair of groups, which hold each other and, through a third group, bob.
+	// Both operands reach the same pair of groups, which hold each other and, through a third group, bob.
 	// The grant is what makes the pair worth settling.
+	// An intersection because a union would stop at viewer's grant and never ask owner.
+	// owner names team:alice, whose answer only settling raises, so it reads what settling published.
 	log := &callLog{stubSource: store().
 		add(doc(oD1), rViewer, teamMember(oEng)).
-		add(doc(oD1), rOwner, teamMember(oEng)).
+		add(doc(oD1), rOwner, teamMember(oAlice)).
 		add(team(oEng), rMember, teamMember(oAlice)).
 		add(team(oEng), rMember, teamMember(oD1)).
 		add(team(oAlice), rMember, teamMember(oEng)).
@@ -344,10 +390,10 @@ func TestCheckReusesASettledComponent(t *testing.T) {
 		t.Fatal("bob reaches the pair through the third group")
 	}
 
-	// viewer, the three groups, and one settling round over team:alice.
-	// owner then reads the settled answers; re-walking the pair for it would make 8.
-	if got := countCalls(log.calls, "lookup"); got != 5 {
-		t.Errorf("%d lookups; want 5, the settled component should not be walked again", got)
+	// viewer, the three groups, one settling round over team:alice, and owner itself.
+	// Walking the pair again for owner would make 8.
+	if got := countCalls(log.calls, "lookup"); got != 6 {
+		t.Errorf("%d lookups; want 6, the settled component should not be walked again", got)
 	}
 }
 
@@ -708,8 +754,8 @@ func TestCheckIgnoresSubjectsTheRelationNoLongerAccepts(t *testing.T) {
 }
 
 // document and folder alike: view = viewer | parent->view.
-func arrowSchema(t *testing.T) *Schema {
-	t.Helper()
+func arrowSchema(tb testing.TB) *Schema {
+	tb.Helper()
 
 	s, err := NewSchemaBuilder().
 		Relation(docRel(rViewer), DirectType(tUser)).
@@ -720,7 +766,7 @@ func arrowSchema(t *testing.T) *Schema {
 		Permission(folderRel(rView), Union(ComputedUserset(rViewer), TupleToUserset(rParent, rView))).
 		Build()
 	if err != nil {
-		t.Fatalf("Build: %v", err)
+		tb.Fatalf("Build: %v", err)
 	}
 
 	return s
