@@ -46,6 +46,8 @@ jobs:
           go-version: ${{ matrix.go }}
           cache: true
       - run: go test -race ./...
+      # Not a gate: one iteration each, so a benchmark that no longer runs is caught here
+      - run: go test -run '^$' -bench . -benchtime=1x ./...
 
   lint:
     name: Lint
