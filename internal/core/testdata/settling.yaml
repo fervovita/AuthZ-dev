@@ -1,28 +1,17 @@
 # Generator-found (TestCheckAgreesWithTheFixedPoint): the shape is arbitrary, not designed.
 name: settling pulls in relations the traversal never reached
-schema:
-  team:
-    relations:
-      viewer_d: [user, "team#owner"]
-      banned_d: [user, "team#owner", "team#banned"]
-      member_d: [user, "team#member", "team#banned"]
-    permissions:
-      viewer:
-        all:
-          - any: [owner, banned]
-          - all: [viewer_d, banned]
-      owner:
-        all:
-          - all: [banned, viewer]
-          - all: [viewer, member]
-      banned:
-        any:
-          - viewer
-          - any: [owner, banned_d]
-      member:
-        all:
-          - member_d
-          - any: [member_d, viewer]
+schema: |
+  definition user {}
+
+  definition team {
+    relation viewer_d: user | team#owner
+    relation banned_d: user | team#owner | team#banned
+    relation member_d: user | team#member | team#banned
+    permission viewer = (owner + banned) & (viewer_d & banned)
+    permission owner = (banned & viewer) & (viewer & member)
+    permission banned = viewer + (owner + banned_d)
+    permission member = member_d & (member_d + viewer)
+  }
 tuples:
   - team:1#viewer_d@team:2#owner
   - team:1#banned_d@user:alice

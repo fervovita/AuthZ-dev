@@ -1,26 +1,17 @@
 # Generator-found (TestCheckAgreesWithTheFixedPoint): the shape is arbitrary, not designed.
 name: a component found through a chain of answers
-schema:
-  team:
-    relations:
-      viewer_d: [user, "team#viewer", "team#owner", "team#banned"]
-      banned_d: [user, "team#viewer", "team#member", "team#banned", "team#owner"]
-      member_d: ["user:*", "team#member", "team#banned"]
-    permissions:
-      viewer:
-        any:
-          - any: [member, viewer]
-          - viewer_d
-      owner:
-        all: [member, banned]
-      banned:
-        all:
-          - all: [viewer, member]
-          - all: [viewer, banned_d]
-      member:
-        any:
-          - all: [member_d, viewer]
-          - all: [member_d, banned]
+schema: |
+  definition user {}
+
+  definition team {
+    relation viewer_d: user | team#viewer | team#owner | team#banned
+    relation banned_d: user | team#viewer | team#member | team#banned | team#owner
+    relation member_d: user:* | team#member | team#banned
+    permission viewer = (member + viewer) + viewer_d
+    permission owner = member & banned
+    permission banned = (viewer & member) & (viewer & banned_d)
+    permission member = (member_d & viewer) + (member_d & banned)
+  }
 tuples:
   - team:1#banned_d@user:alice
   - team:1#member_d@user:*
