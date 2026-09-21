@@ -114,6 +114,85 @@ var (
 	ErrUnsupportedOp = errors.New("core: unsupported rewrite operator")
 )
 
+// SchemaError is one reason Build refused a schema. It matches ErrSchemaInvalid.
+// The reason keeps the ids it mentions as values, so a caller that knows the names can say it in them.
+type SchemaError struct {
+	Ref RelationRef // the relation at fault
+
+	msg    string
+	format string
+	args   []any
+}
+
+// schemaError reports a problem with ref. The format names whatever it names, ref included.
+// Writing the reason here, rather than in Error, is also what shows vet the format: it checks
+// the calls below only because this one hands a format and its arguments to fmt.
+func schemaError(ref RelationRef, format string, args ...any) *SchemaError {
+	return &SchemaError{Ref: ref, msg: fmt.Sprintf(format, args...), format: format, args: args}
+}
+
+func (e *SchemaError) Error() string {
+	return ErrSchemaInvalid.Error() + ": " + e.msg
+}
+
+// Unwrap lets errors.Is match ErrSchemaInvalid.
+func (e *SchemaError) Unwrap() error { return ErrSchemaInvalid }
+
+// Explain gives the reason with the names d holds in place of ids:
+// document#view for a relation, and user, user:* or team#member for a subject type.
+func (e *SchemaError) Explain(d *Dictionary) string {
+	args := make([]any, len(e.args))
+	for i, a := range e.args {
+		args[i] = d.describe(a)
+	}
+
+	return fmt.Sprintf(e.format, args...)
+}
+
+// described prints as itself under any verb, so a format written for ids takes names unchanged.
+type described string
+
+func (s described) Format(f fmt.State, _ rune) {
+	_, _ = f.Write([]byte(s))
+}
+
+// describe names an id-bearing value, falling back to the number for an id d never interned.
+func (d *Dictionary) describe(a any) any {
+	typeName := func(id TypeID) string {
+		if name, ok := d.TypeName(id); ok {
+			return name
+		}
+
+		return strconv.FormatUint(uint64(id), 10)
+	}
+
+	relName := func(id RelationID) string {
+		if name, ok := d.RelationName(id); ok {
+			return name
+		}
+
+		return strconv.FormatUint(uint64(id), 10)
+	}
+
+	switch v := a.(type) {
+	case RelationRef:
+		return described(typeName(v.Type) + "#" + relName(v.Relation))
+	case SubjectType:
+		switch {
+		case v.Wildcard:
+			return described(typeName(v.Type) + ":" + WildcardMarker)
+		case v.Relation != NoRelation:
+			return described(typeName(v.Type) + "#" + relName(v.Relation))
+		default:
+			return described(typeName(v.Type))
+		}
+	case RelationID:
+		return described(relName(v))
+	default:
+		return a
+	}
+}
+
 // Schema holds every relation's rewrite and the subjects it accepts.
 // Build is the only way to make one, so a schema in hand has already passed validation.
 type Schema struct {
@@ -175,7 +254,7 @@ func (b *SchemaBuilder) Permission(r RelationRef, rw Rewrite) *SchemaBuilder {
 // define records rw for r, reporting whether it was the first definition.
 func (b *SchemaBuilder) define(r RelationRef, rw Rewrite) bool {
 	if _, ok := b.rewrites[r]; ok {
-		b.errs = append(b.errs, fmt.Errorf("%w: relation %+v defined twice", ErrSchemaInvalid, r))
+		b.errs = append(b.errs, schemaError(r, "relation %+v defined twice", r))
 
 		return false
 	}
@@ -252,28 +331,28 @@ func (b *SchemaBuilder) checkShape(ref RelationRef, rw Rewrite, top bool) []erro
 	switch rw.Op {
 	case OpThis:
 		if !top {
-			errs = append(errs, fmt.Errorf(
-				"%w: %+v: this is a whole relation, not an operand of a permission", ErrSchemaInvalid, ref))
+			errs = append(errs, schemaError(ref,
+				"%+v: this is a whole relation, not an operand of a permission", ref))
 		}
 
 		if len(rw.Children) != 0 || rw.Relation != NoRelation || rw.Tupleset != NoRelation {
-			errs = append(errs, fmt.Errorf("%w: %+v: this takes no operands", ErrSchemaInvalid, ref))
+			errs = append(errs, schemaError(ref, "%+v: this takes no operands", ref))
 		}
 
 	case OpComputedUserset:
 		if len(rw.Children) != 0 || rw.Tupleset != NoRelation {
-			errs = append(errs, fmt.Errorf("%w: %+v: computed_userset takes only a relation", ErrSchemaInvalid, ref))
+			errs = append(errs, schemaError(ref, "%+v: computed_userset takes only a relation", ref))
 		}
 
 		if rw.Relation == NoRelation {
-			errs = append(errs, fmt.Errorf("%w: %+v: computed_userset needs a relation", ErrSchemaInvalid, ref))
+			errs = append(errs, schemaError(ref, "%+v: computed_userset needs a relation", ref))
 
 			break
 		}
 
 		target := RelationRef{Type: ref.Type, Relation: rw.Relation}
 		if _, ok := b.rewrites[target]; !ok {
-			errs = append(errs, fmt.Errorf("%w: %+v refers to undefined %+v", ErrSchemaInvalid, ref, target))
+			errs = append(errs, schemaError(ref, "%+v refers to undefined %+v", ref, target))
 		}
 
 	case OpTupleToUserset:
@@ -281,24 +360,24 @@ func (b *SchemaBuilder) checkShape(ref RelationRef, rw Rewrite, top bool) []erro
 
 	case OpUnion, OpIntersection:
 		if rw.Relation != NoRelation || rw.Tupleset != NoRelation {
-			errs = append(errs, fmt.Errorf("%w: %+v: %s takes only operands", ErrSchemaInvalid, ref, rw.Op))
+			errs = append(errs, schemaError(ref, "%+v: %s takes only operands", ref, rw.Op))
 		}
 
 		if len(rw.Children) < 2 {
-			errs = append(errs, fmt.Errorf("%w: %+v: %s needs two or more operands", ErrSchemaInvalid, ref, rw.Op))
+			errs = append(errs, schemaError(ref, "%+v: %s needs two or more operands", ref, rw.Op))
 		}
 
 	case OpExclusion:
 		if rw.Relation != NoRelation || rw.Tupleset != NoRelation {
-			errs = append(errs, fmt.Errorf("%w: %+v: exclusion takes only operands", ErrSchemaInvalid, ref))
+			errs = append(errs, schemaError(ref, "%+v: exclusion takes only operands", ref))
 		}
 
 		if len(rw.Children) != 2 {
-			errs = append(errs, fmt.Errorf("%w: %+v: exclusion needs exactly two operands", ErrSchemaInvalid, ref))
+			errs = append(errs, schemaError(ref, "%+v: exclusion needs exactly two operands", ref))
 		}
 
 	default:
-		errs = append(errs, fmt.Errorf("%w: %+v: %s", ErrSchemaInvalid, ref, rw.Op))
+		errs = append(errs, schemaError(ref, "%+v: %s", ref, rw.Op))
 	}
 
 	for _, child := range rw.Children {
@@ -313,36 +392,36 @@ func (b *SchemaBuilder) checkArrow(ref RelationRef, rw Rewrite) []error {
 	var errs []error
 
 	if len(rw.Children) != 0 {
-		errs = append(errs, fmt.Errorf("%w: %+v: tuple_to_userset takes only a tupleset and a relation", ErrSchemaInvalid, ref))
+		errs = append(errs, schemaError(ref, "%+v: tuple_to_userset takes only a tupleset and a relation", ref))
 	}
 
 	if rw.Tupleset == NoRelation || rw.Relation == NoRelation {
-		return append(errs, fmt.Errorf("%w: %+v: tuple_to_userset needs a tupleset and a relation", ErrSchemaInvalid, ref))
+		return append(errs, schemaError(ref, "%+v: tuple_to_userset needs a tupleset and a relation", ref))
 	}
 
 	tupleset := RelationRef{Type: ref.Type, Relation: rw.Tupleset}
 
 	ts, ok := b.rewrites[tupleset]
 	if !ok {
-		return append(errs, fmt.Errorf("%w: %+v refers to undefined %+v", ErrSchemaInvalid, ref, tupleset))
+		return append(errs, schemaError(ref, "%+v refers to undefined %+v", ref, tupleset))
 	}
 
 	if ts.Op != OpThis {
-		return append(errs, fmt.Errorf("%w: %+v: tupleset %+v is a permission and stores nothing to follow",
-			ErrSchemaInvalid, ref, tupleset))
+		return append(errs, schemaError(ref, "%+v: tupleset %+v is a permission and stores nothing to follow",
+			ref, tupleset))
 	}
 
 	// A userset or a wildcard names no single object to follow.
 	for _, st := range b.allowed[tupleset] {
 		if st.Relation != NoRelation || st.Wildcard {
-			errs = append(errs, fmt.Errorf("%w: %+v: tupleset %+v accepts %+v, but an arrow follows objects only",
-				ErrSchemaInvalid, ref, tupleset, st))
+			errs = append(errs, schemaError(ref, "%+v: tupleset %+v accepts %+v, but an arrow follows objects only",
+				ref, tupleset, st))
 		}
 	}
 
 	if len(b.arrowTargets(tupleset, rw.Relation)) == 0 {
-		errs = append(errs, fmt.Errorf("%w: %+v: relation %d is not defined on any type %+v accepts",
-			ErrSchemaInvalid, ref, rw.Relation, tupleset))
+		errs = append(errs, schemaError(ref, "%+v: relation %d is not defined on any type %+v accepts",
+			ref, rw.Relation, tupleset))
 	}
 
 	return errs
@@ -370,28 +449,28 @@ func (b *SchemaBuilder) checkAllowed(ref RelationRef, rw Rewrite) []error {
 
 	allowed := b.allowed[ref]
 	if len(allowed) == 0 {
-		return []error{fmt.Errorf(
-			"%w: %+v accepts no subject type, so no tuple on it could grant", ErrSchemaInvalid, ref)}
+		return []error{schemaError(ref,
+			"%+v accepts no subject type, so no tuple on it could grant", ref)}
 	}
 
 	var errs []error
 
 	for i, st := range allowed {
 		if st.Type == 0 {
-			errs = append(errs, fmt.Errorf("%w: %+v: a subject type did not resolve", ErrSchemaInvalid, ref))
+			errs = append(errs, schemaError(ref, "%+v: a subject type did not resolve", ref))
 
 			continue
 		}
 
 		// A wildcard names every object of a type, and a userset is a set rather than one of them.
 		if st.Wildcard && st.Relation != NoRelation {
-			errs = append(errs, fmt.Errorf("%w: %+v: a wildcard cannot carry a relation", ErrSchemaInvalid, ref))
+			errs = append(errs, schemaError(ref, "%+v: a wildcard cannot carry a relation", ref))
 
 			continue
 		}
 
 		if slices.Contains(allowed[:i], st) {
-			errs = append(errs, fmt.Errorf("%w: %+v: subject type %+v listed twice", ErrSchemaInvalid, ref, st))
+			errs = append(errs, schemaError(ref, "%+v: subject type %+v listed twice", ref, st))
 		}
 
 		if st.Relation == NoRelation {
@@ -401,7 +480,7 @@ func (b *SchemaBuilder) checkAllowed(ref RelationRef, rw Rewrite) []error {
 		// Stratification draws an edge to this relation, so it has to exist to be drawn to.
 		target := RelationRef{Type: st.Type, Relation: st.Relation}
 		if _, ok := b.rewrites[target]; !ok {
-			errs = append(errs, fmt.Errorf("%w: %+v accepts undefined %+v", ErrSchemaInvalid, ref, target))
+			errs = append(errs, schemaError(ref, "%+v accepts undefined %+v", ref, target))
 		}
 	}
 
@@ -477,9 +556,9 @@ func checkStratified(edges []edge) []error {
 		}
 
 		if reaches(edges, e.to, e.from) {
-			errs = append(errs, fmt.Errorf(
-				"%w: %+v excludes %+v, which reaches back to it",
-				ErrSchemaInvalid, e.from, e.to))
+			errs = append(errs, schemaError(e.from,
+				"%+v excludes %+v, which reaches back to it",
+				e.from, e.to))
 		}
 	}
 

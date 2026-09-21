@@ -610,3 +610,96 @@ func TestOpString(t *testing.T) {
 		}
 	}
 }
+
+// A caller that holds the names gets Build's reason in them, and Ref says which definition to point at.
+func TestSchemaErrorExplainsInNames(t *testing.T) {
+	t.Parallel()
+
+	d := NewDictionary()
+
+	typ := func(name string) TypeID {
+		id, err := d.InternType(name)
+		if err != nil {
+			t.Fatalf("InternType: %v", err)
+		}
+
+		return id
+	}
+
+	rel := func(name string) RelationID {
+		id, err := d.InternRelation(name)
+		if err != nil {
+			t.Fatalf("InternRelation: %v", err)
+		}
+
+		return id
+	}
+
+	document, folder, team, user := typ("document"), typ("folder"), typ("team"), typ("user")
+	viewer, view, parent, member, editor := rel("viewer"), rel("view"), rel("parent"), rel("member"), rel("editor")
+
+	docViewer := RelationRef{Type: document, Relation: viewer}
+	docView := RelationRef{Type: document, Relation: view}
+	docParent := RelationRef{Type: document, Relation: parent}
+
+	for _, c := range []struct {
+		name string
+		b    *SchemaBuilder
+		ref  RelationRef
+		want string
+	}{
+		{
+			"a relation", NewSchemaBuilder().Permission(docView, ComputedUserset(editor)),
+			docView, "document#view refers to undefined document#editor",
+		},
+		{
+			"a userset subject", NewSchemaBuilder().Relation(docViewer, UsersetType(team, member)),
+			docViewer, "document#viewer accepts undefined team#member",
+		},
+		{
+			"a plain subject", NewSchemaBuilder().Relation(docViewer, DirectType(user), DirectType(user)),
+			docViewer, "document#viewer: subject type user listed twice",
+		},
+		{
+			"a wildcard subject", NewSchemaBuilder().Relation(docViewer, WildcardType(user), WildcardType(user)),
+			docViewer, "document#viewer: subject type user:* listed twice",
+		},
+		{
+			"a relation named alone", NewSchemaBuilder().
+				Relation(docParent, DirectType(folder)).
+				Permission(docView, TupleToUserset(parent, view)),
+			docView, "document#view: relation view is not defined on any type document#parent accepts",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := c.b.Build()
+
+			var se *SchemaError
+			if !errors.As(err, &se) {
+				t.Fatalf("err = %v; want a *SchemaError", err)
+			}
+
+			if se.Ref != c.ref {
+				t.Errorf("Ref = %+v; want %+v", se.Ref, c.ref)
+			}
+
+			if got := se.Explain(d); got != c.want {
+				t.Errorf("Explain = %q; want %q", got, c.want)
+			}
+		})
+	}
+
+	// A dictionary that never saw the names still says something, in numbers.
+	_, err := NewSchemaBuilder().Permission(docView, ComputedUserset(editor)).Build()
+
+	var se *SchemaError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v; want a *SchemaError", err)
+	}
+
+	if got, want := se.Explain(NewDictionary()), "1#2 refers to undefined 1#5"; got != want {
+		t.Errorf("Explain = %q; want %q", got, want)
+	}
+}
