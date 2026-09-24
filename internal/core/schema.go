@@ -471,6 +471,8 @@ func (b *SchemaBuilder) checkAllowed(ref RelationRef, rw Rewrite) []error {
 
 		if slices.Contains(allowed[:i], st) {
 			errs = append(errs, schemaError(ref, "%+v: subject type %+v listed twice", ref, st))
+
+			continue
 		}
 
 		if st.Relation == NoRelation {
@@ -481,10 +483,76 @@ func (b *SchemaBuilder) checkAllowed(ref RelationRef, rw Rewrite) []error {
 		target := RelationRef{Type: st.Type, Relation: st.Relation}
 		if _, ok := b.rewrites[target]; !ok {
 			errs = append(errs, schemaError(ref, "%+v accepts undefined %+v", ref, target))
+
+			continue
+		}
+
+		if w := b.reachesWildcard(target, map[RelationRef]bool{}); w != nil {
+			errs = append(errs, schemaError(ref, "%+v accepts %+v, which reaches %+v at %+v", ref, target, w.st, w.at))
 		}
 	}
 
 	return errs
+}
+
+// wildcardSite is a relation that accepts a wildcard, and the wildcard it accepts.
+type wildcardSite struct {
+	at RelationRef
+	st SubjectType
+}
+
+// reachesWildcard reports where ref picks up every subject of a type: a wildcard it accepts, or one
+// the relations a permission's expression reads accept.
+// The kind of operator does not matter: a wildcard in any operand counts.
+// Userset subject types are not followed: each is refused where it is declared.
+func (b *SchemaBuilder) reachesWildcard(ref RelationRef, seen map[RelationRef]bool) *wildcardSite {
+	rw, ok := b.rewrites[ref]
+	if !ok || seen[ref] {
+		return nil
+	}
+
+	seen[ref] = true
+
+	if rw.Op != OpThis {
+		return b.rewriteReachesWildcard(ref.Type, rw, seen)
+	}
+
+	for _, st := range b.allowed[ref] {
+		if st.Wildcard {
+			return &wildcardSite{at: ref, st: st}
+		}
+	}
+
+	return nil
+}
+
+// rewriteReachesWildcard walks a permission's expression for reachesWildcard.
+func (b *SchemaBuilder) rewriteReachesWildcard(typ TypeID, rw Rewrite, seen map[RelationRef]bool) *wildcardSite {
+	switch rw.Op {
+	case OpThis:
+		// A permission's expression cannot hold "this"; checkShape refuses that.
+
+	case OpComputedUserset:
+		return b.reachesWildcard(RelationRef{Type: typ, Relation: rw.Relation}, seen)
+
+	case OpTupleToUserset:
+		// An arrow yields the subjects of Relation on whatever the tupleset names.
+		for _, target := range b.arrowTargets(RelationRef{Type: typ, Relation: rw.Tupleset}, rw.Relation) {
+			if w := b.reachesWildcard(target, seen); w != nil {
+				return w
+			}
+		}
+
+	case OpUnion, OpIntersection, OpExclusion:
+		// Every operand counts the same, including the one an exclusion subtracts.
+		for _, child := range rw.Children {
+			if w := b.rewriteReachesWildcard(typ, child, seen); w != nil {
+				return w
+			}
+		}
+	}
+
+	return nil
 }
 
 // edge is a dependency from one relation to another.

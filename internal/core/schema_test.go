@@ -173,6 +173,27 @@ func TestSchemaBuildRejectsShape(t *testing.T) {
 	}
 }
 
+// A repeated subject type is one mistake, so it is said once: the entry is the same value, and what
+// the checks after it would say was already said for the first one.
+func TestSchemaReportsARepeatedSubjectTypeOnce(t *testing.T) {
+	t.Parallel()
+
+	_, err := NewSchemaBuilder().
+		Relation(docRel(rViewer), UsersetType(tTeam, rMember), UsersetType(tTeam, rMember)).
+		Build()
+	if err == nil {
+		t.Fatal("Build succeeded; want an error")
+	}
+
+	if !strings.Contains(err.Error(), "listed twice") {
+		t.Errorf("err = %v; want it to say the type is listed twice", err)
+	}
+
+	if n := strings.Count(err.Error(), "accepts undefined"); n != 1 {
+		t.Errorf("the undefined target was named %d times; want once:\n%v", n, err)
+	}
+}
+
 // The message is checked as well as the sentinel: an arrow broken one way can trip another rule too,
 // and the case would pass for the wrong reason.
 func TestSchemaBuildRejectsArrows(t *testing.T) {
@@ -396,6 +417,99 @@ func TestSchemaRejectsRecursionThroughExclusion(t *testing.T) {
 			t.Errorf("err = %q; want it to name the cycle", err)
 		}
 	})
+}
+
+// A userset subject type names a group, and a group may not be everyone.
+// Otherwise a subject with no tuples of its own belongs to every open group, and a reverse lookup has to walk all of them.
+func TestSchemaRejectsWildcardUnderAUserset(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		name string
+		def  func(*SchemaBuilder) *SchemaBuilder
+	}{
+		{"on the relation named", func(b *SchemaBuilder) *SchemaBuilder {
+			return b.Relation(teamRel(rMember), DirectType(tUser), WildcardType(tUser))
+		}},
+		// The relation in between is the one refused, which is where the wildcard would be taken out.
+		{"a hop further", func(b *SchemaBuilder) *SchemaBuilder {
+			return b.
+				Relation(teamRel(rMember), UsersetType(tTeam, rOwner)).
+				Relation(teamRel(rOwner), WildcardType(tUser))
+		}},
+		{"through a permission", func(b *SchemaBuilder) *SchemaBuilder {
+			return b.
+				Permission(teamRel(rMember), Union(ComputedUserset(rOwner), ComputedUserset(rBanned))).
+				Relation(teamRel(rOwner), WildcardType(tUser)).
+				Relation(teamRel(rBanned), DirectType(tUser))
+		}},
+		// The operators are not read, so an intersection is refused like a union: an expression
+		// elsewhere must not decide whether this declaration is legal.
+		{"through an intersection", func(b *SchemaBuilder) *SchemaBuilder {
+			return b.
+				Permission(teamRel(rMember), Intersection(ComputedUserset(rOwner), ComputedUserset(rBanned))).
+				Relation(teamRel(rOwner), WildcardType(tUser)).
+				Relation(teamRel(rBanned), DirectType(tUser))
+		}},
+		{"through an arrow", func(b *SchemaBuilder) *SchemaBuilder {
+			return b.
+				Permission(teamRel(rMember), TupleToUserset(rParent, rViewer)).
+				Relation(teamRel(rParent), DirectType(tFolder)).
+				Relation(folderRel(rViewer), WildcardType(tUser))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := NewSchemaBuilder().Relation(docRel(rViewer), DirectType(tUser), UsersetType(tTeam, rMember))
+
+			_, err := c.def(b).Build()
+			if !errors.Is(err, ErrSchemaInvalid) {
+				t.Fatalf("err = %v; want ErrSchemaInvalid", err)
+			}
+
+			if !strings.Contains(err.Error(), "which reaches") {
+				t.Errorf("err = %q; want it to name what the userset reaches", err)
+			}
+		})
+	}
+}
+
+// The wildcard itself is not the problem: only one a userset carries in.
+func TestSchemaAcceptsWildcardsOutsideAUserset(t *testing.T) {
+	t.Parallel()
+
+	for _, c := range []struct {
+		name string
+		def  func() *SchemaBuilder
+	}{
+		{"on the relation that declares it", func() *SchemaBuilder {
+			return NewSchemaBuilder().
+				Relation(docRel(rViewer), DirectType(tUser), WildcardType(tUser), UsersetType(tTeam, rMember)).
+				Relation(teamRel(rMember), DirectType(tUser))
+		}},
+		{"on a relation no userset names", func() *SchemaBuilder {
+			return NewSchemaBuilder().
+				Relation(docRel(rViewer), DirectType(tUser)).
+				Relation(docRel(rBanned), WildcardType(tUser)).
+				Permission(docRel(rView), Exclusion(ComputedUserset(rViewer), ComputedUserset(rBanned)))
+		}},
+		// The walk has to stop on its own here: the two permissions read each other.
+		{"where the walk loops", func() *SchemaBuilder {
+			return NewSchemaBuilder().
+				Relation(docRel(rViewer), DirectType(tUser), UsersetType(tTeam, rMember)).
+				Permission(teamRel(rMember), ComputedUserset(rOwner)).
+				Permission(teamRel(rOwner), ComputedUserset(rMember))
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+
+			if _, err := c.def().Build(); err != nil {
+				t.Errorf("Build: %v", err)
+			}
+		})
+	}
 }
 
 // Recursion itself is fine; only recursion through a subtract is not.
@@ -637,10 +751,12 @@ func TestSchemaErrorExplainsInNames(t *testing.T) {
 
 	document, folder, team, user := typ("document"), typ("folder"), typ("team"), typ("user")
 	viewer, view, parent, member, editor := rel("viewer"), rel("view"), rel("parent"), rel("member"), rel("editor")
+	owner := rel("owner")
 
 	docViewer := RelationRef{Type: document, Relation: viewer}
 	docView := RelationRef{Type: document, Relation: view}
 	docParent := RelationRef{Type: document, Relation: parent}
+	teamMember := RelationRef{Type: team, Relation: member}
 
 	for _, c := range []struct {
 		name string
@@ -669,6 +785,13 @@ func TestSchemaErrorExplainsInNames(t *testing.T) {
 				Relation(docParent, DirectType(folder)).
 				Permission(docView, TupleToUserset(parent, view)),
 			docView, "document#view: relation view is not defined on any type document#parent accepts",
+		},
+		{
+			"a wildcard a userset carries in", NewSchemaBuilder().
+				Relation(docViewer, UsersetType(team, member)).
+				Permission(teamMember, ComputedUserset(owner)).
+				Relation(RelationRef{Type: team, Relation: owner}, WildcardType(user)),
+			docViewer, "document#viewer accepts team#member, which reaches user:* at team#owner",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {

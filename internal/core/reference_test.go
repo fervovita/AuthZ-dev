@@ -110,7 +110,56 @@ func randomDefinitions(rnd *rand.Rand, rels []RelationID) definitions {
 		d.allowed[ref] = randomTypes(rnd, rels)
 	}
 
+	dropWildcardsUnderUsersets(d)
+
 	return d
+}
+
+// dropWildcardsUnderUsersets keeps wildcards off every relation a userset subject type can reach, which Build refuses.
+// Drawing those schemas anyway would spend a quarter of the seeds on definitions that never reach an evaluation.
+func dropWildcardsUnderUsersets(d definitions) {
+	deps := dependencies(d)
+	reached := make(map[RelationRef]bool, len(d.rewrites))
+
+	var queue []RelationRef
+
+	for _, list := range d.allowed {
+		for _, st := range list {
+			if st.Relation != NoRelation {
+				queue = append(queue, RelationRef{Type: st.Type, Relation: st.Relation})
+			}
+		}
+	}
+
+	for len(queue) > 0 {
+		ref := queue[len(queue)-1]
+		queue = queue[:len(queue)-1]
+
+		if reached[ref] {
+			continue
+		}
+
+		reached[ref] = true
+
+		for _, dep := range deps {
+			if dep.from == ref {
+				queue = append(queue, dep.to)
+			}
+		}
+	}
+
+	for ref := range reached {
+		if d.rewrites[ref].Op != OpThis {
+			continue // a permission stores nothing, and a name no definition claims has no list
+		}
+
+		kept := slices.DeleteFunc(slices.Clone(d.allowed[ref]), func(st SubjectType) bool { return st.Wildcard })
+		if len(kept) == 0 {
+			kept = []SubjectType{DirectType(tUser)}
+		}
+
+		d.allowed[ref] = kept
+	}
 }
 
 // randomTypes draws from exactly what randomTuples writes, and takes a subset, so tuples the
