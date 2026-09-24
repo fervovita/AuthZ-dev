@@ -6,7 +6,7 @@ schema: |
   definition team {
     relation viewer_d: user | team#viewer | team#owner | team#banned
     relation banned_d: user | team#viewer | team#member | team#banned | team#owner
-    relation member_d: user:* | team#member | team#banned
+    relation member_d: user | team#member | team#banned
     permission viewer = (member + viewer) + viewer_d
     permission owner = member & banned
     permission banned = (viewer & member) & (viewer & banned_d)
@@ -14,19 +14,19 @@ schema: |
   }
 tuples:
   - team:1#banned_d@user:alice
-  - team:1#member_d@user:*
+  - team:1#member_d@user:alice
   - team:1#member_d@team:3#banned
   - team:2#viewer_d@team:1#banned
   - team:2#viewer_d@user:alice
   - team:2#banned_d@team:4#viewer
   - team:2#banned_d@team:3#viewer
   - team:2#member_d@team:4#member
-  - team:2#member_d@user:*
+  - team:2#member_d@user:alice
   - team:3#viewer_d@user:alice
   - team:3#viewer_d@team:3#viewer
   - team:3#banned_d@team:1#member
   - team:3#banned_d@team:2#banned
-  - team:3#member_d@user:*
+  - team:3#member_d@user:alice
   - team:3#member_d@team:1#member
   - team:4#viewer_d@team:4#owner
   - team:4#viewer_d@team:3#banned
@@ -45,5 +45,5 @@ checks:
   - check: team:1#member@user:alice
     expect: false
     why: >-
-      the wildcard on team:1#member_d grants, but member also needs viewer or banned
+      team:1#member_d grants alice, but member also needs viewer or banned
       on team:1, and neither holds
