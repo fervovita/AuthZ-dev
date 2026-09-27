@@ -49,6 +49,26 @@ jobs:
       # Not a gate: one iteration each, so a benchmark that no longer runs is caught here
       - run: go test -run '^$' -bench . -benchtime=1x ./...
 
+  integration:
+    name: Integration (Postgres ${{ matrix.postgres }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["15", "18"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test -race -tags integration ./...
+        env:
+          POSTGRES_TEST_IMAGE: postgres:${{ matrix.postgres }}-alpine
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -64,3 +84,20 @@ jobs:
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: latest
+
+  licenses:
+    name: Licenses
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: >-
+          go run github.com/google/go-licenses/v2@v2.0.1 check ./...
+          --ignore github.com/fervovita/AuthZ-dev
+          --allowed_licenses=Apache-2.0,BSD-2-Clause,BSD-3-Clause,ISC,MIT
