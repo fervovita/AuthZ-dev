@@ -13,7 +13,7 @@ import (
 	"github.com/fervovita/AuthZ-dev/internal/core"
 )
 
-// ErrInvalid reports a schema or an update the store refuses. The request changes nothing.
+// ErrInvalid reports a schema, an update or a filter the store refuses. The request changes nothing.
 var ErrInvalid = errors.New("postgres: invalid")
 
 // Tuple names one relationship in strings: IDs interned in a process never reach the store.
@@ -53,6 +53,9 @@ type Update struct {
 
 const columns = `resource_type, resource_id, relation, subject_type, subject_id, subject_relation`
 
+// keyColumns is the primary key's order, not the table's.
+const keyColumns = `resource_type, relation, resource_id, subject_type, subject_id, subject_relation`
+
 // Each statement logs its tuple only when it changed one: a conflict or a missing row returns nothing to log.
 const (
 	touchSQL = `WITH changed AS (
@@ -71,57 +74,58 @@ const (
 
 // Write applies updates in one transaction, checked against the newest schema.
 func (s *Store) Write(ctx context.Context, updates []Update) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
-	if err != nil {
-		return fmt.Errorf("postgres: write: %w", err)
-	}
-
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	compiled, d, err := latestSchema(ctx, tx)
-	if err != nil {
-		return err
-	}
-
-	seen := make(map[Tuple]int, len(updates))
-
-	for i, u := range updates {
-		if err := check(compiled, d, u); err != nil {
-			return fmt.Errorf("%w: updates[%d] %s: %w", ErrInvalid, i, u.Tuple, err)
-		}
-
-		if j, ok := seen[u.Tuple]; ok {
-			return fmt.Errorf("%w: updates[%d] %s: repeats updates[%d]", ErrInvalid, i, u.Tuple, j)
-		}
-
-		seen[u.Tuple] = i
-	}
-
-	// Applying in one order keeps two requests over the same tuples from each holding one and waiting on the other.
-	ordered := slices.Clone(updates)
-	slices.SortFunc(ordered, func(a, b Update) int { return compareTuples(a.Tuple, b.Tuple) })
-
-	for _, u := range ordered {
-		var sql string
-
-		switch u.Op {
-		case Touch:
-			sql = touchSQL
-		case Delete:
-			sql = deleteSQL
-		}
-
-		t := u.Tuple
-		if _, err := tx.Exec(ctx, sql, t.ResourceType, t.ResourceID, t.Relation, t.SubjectType, t.SubjectID, t.SubjectRelation); err != nil {
+	return s.inTx(ctx, "write", func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, schemaLockShared); err != nil {
 			return fmt.Errorf("postgres: write: %w", err)
 		}
-	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("postgres: write: %w", err)
-	}
+		d := core.NewDictionary()
 
-	return nil
+		compiled, err := latestSchema(ctx, tx, d)
+		if err != nil {
+			return err
+		}
+
+		if compiled == nil {
+			return fmt.Errorf("%w: no schema has been written", ErrInvalid)
+		}
+
+		seen := make(map[Tuple]int, len(updates))
+
+		for i, u := range updates {
+			if err := check(compiled, d, u); err != nil {
+				return fmt.Errorf("%w: updates[%d] %s: %w", ErrInvalid, i, u.Tuple, err)
+			}
+
+			if j, ok := seen[u.Tuple]; ok {
+				return fmt.Errorf("%w: updates[%d] %s: repeats updates[%d]", ErrInvalid, i, u.Tuple, j)
+			}
+
+			seen[u.Tuple] = i
+		}
+
+		// Applying in one order keeps two requests over the same tuples from each holding one and waiting on the other.
+		ordered := slices.Clone(updates)
+		slices.SortFunc(ordered, func(a, b Update) int { return compareTuples(a.Tuple, b.Tuple) })
+
+		for _, u := range ordered {
+			var sql string
+
+			switch u.Op {
+			case Touch:
+				sql = touchSQL
+			case Delete:
+				sql = deleteSQL
+			}
+
+			t := u.Tuple
+			if _, err := tx.Exec(ctx, sql, t.ResourceType, t.ResourceID, t.Relation, t.SubjectType, t.SubjectID, t.SubjectRelation); err != nil {
+				return fmt.Errorf("postgres: write: %w", err)
+			}
+		}
+
+		return nil
+	})
 }
 
 // check reports why compiled refuses u, looking names up in d without interning them.
@@ -137,49 +141,52 @@ func check(compiled *core.Schema, d *core.Dictionary, u Update) error {
 		return errors.New("breaks the identifier rules")
 	}
 
-	ref := core.RelationRef{Type: d.LookupType(t.ResourceType), Relation: d.LookupRelation(t.Relation)}
+	return checkFilter(compiled, d, Filter{
+		ResourceType:    t.ResourceType,
+		Relation:        t.Relation,
+		SubjectType:     t.SubjectType,
+		SubjectRelation: t.SubjectRelation,
+		Wildcard:        t.SubjectID == core.WildcardMarker,
+	})
+}
+
+// checkFilter reports why compiled refuses the tuples f matches, looking names up in d without interning them.
+func checkFilter(compiled *core.Schema, d *core.Dictionary, f Filter) error {
+	ref := core.RelationRef{Type: d.LookupType(f.ResourceType), Relation: d.LookupRelation(f.Relation)}
 
 	rw, ok := compiled.Rewrite(ref)
 	if !ok {
-		return fmt.Errorf("%s#%s is not defined", t.ResourceType, t.Relation)
+		return fmt.Errorf("%s#%s is not defined", f.ResourceType, f.Relation)
 	}
 
 	if rw.Op != core.OpThis {
-		return fmt.Errorf("%s#%s is a permission, which stores no tuples", t.ResourceType, t.Relation)
+		return fmt.Errorf("%s#%s is a permission, which stores no tuples", f.ResourceType, f.Relation)
 	}
 
-	st := core.SubjectType{Type: d.LookupType(t.SubjectType), Wildcard: t.SubjectID == core.WildcardMarker}
-	if t.SubjectRelation != "" {
-		st.Relation = d.LookupRelation(t.SubjectRelation)
+	if f.SubjectType == "" {
+		return nil
 	}
 
-	if (t.SubjectRelation != "" && st.Relation == core.NoRelation) || !compiled.Allows(ref, st) {
-		return fmt.Errorf("%s#%s does not accept %s", t.ResourceType, t.Relation, subjectType(t))
+	st := core.SubjectType{Type: d.LookupType(f.SubjectType), Wildcard: f.Wildcard}
+	if f.SubjectRelation != "" {
+		st.Relation = d.LookupRelation(f.SubjectRelation)
+	}
+
+	if (f.SubjectRelation != "" && st.Relation == core.NoRelation) || !compiled.Allows(ref, st) {
+		return fmt.Errorf("%s#%s does not accept %s", f.ResourceType, f.Relation, f.subjectType())
 	}
 
 	return nil
 }
 
-// compareTuples orders tuples column by column.
+// compareTuples orders tuples as the primary key does.
 func compareTuples(a, b Tuple) int {
 	return cmp.Or(
 		strings.Compare(a.ResourceType, b.ResourceType),
-		strings.Compare(a.ResourceID, b.ResourceID),
 		strings.Compare(a.Relation, b.Relation),
+		strings.Compare(a.ResourceID, b.ResourceID),
 		strings.Compare(a.SubjectType, b.SubjectType),
 		strings.Compare(a.SubjectID, b.SubjectID),
 		strings.Compare(a.SubjectRelation, b.SubjectRelation),
 	)
-}
-
-// subjectType formats the subject type t names, as a schema would: user, user:* or team#member.
-func subjectType(t Tuple) string {
-	switch {
-	case t.SubjectID == core.WildcardMarker:
-		return t.SubjectType + ":" + core.WildcardMarker
-	case t.SubjectRelation != "":
-		return t.SubjectType + "#" + t.SubjectRelation
-	}
-
-	return t.SubjectType
 }

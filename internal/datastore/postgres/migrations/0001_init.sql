@@ -6,7 +6,8 @@ CREATE TABLE tuples (
     subject_type     text COLLATE "C" NOT NULL,
     subject_id       text COLLATE "C" NOT NULL, -- "*" names every subject of subject_type
     subject_relation text COLLATE "C" NOT NULL, -- "" names the subject itself
-    PRIMARY KEY (resource_type, resource_id, relation, subject_type, subject_id, subject_relation)
+    -- relation before resource_id keeps each relation's tuples in one key range.
+    PRIMARY KEY (resource_type, relation, resource_id, subject_type, subject_id, subject_relation)
 );
 
 -- Which tuples each transaction touched, not what it did: a change goes out as the tuple's state now,
