@@ -35,7 +35,7 @@ func (s *Store) WriteSchema(ctx context.Context, source string) error {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 
-	return s.inTx(ctx, "write schema", func(tx pgx.Tx) error {
+	return s.inTx(ctx, "write schema", writeTx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, schemaLockExclusive); err != nil {
 			return fmt.Errorf("postgres: write schema: %w", err)
 		}

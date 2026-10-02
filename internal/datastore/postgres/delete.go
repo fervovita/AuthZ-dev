@@ -30,7 +30,7 @@ func (f Filter) String() string {
 
 // DeleteMatching removes every tuple f matches in one transaction, checked against the newest schema.
 func (s *Store) DeleteMatching(ctx context.Context, f Filter) error {
-	return s.inTx(ctx, "delete", func(tx pgx.Tx) error {
+	return s.inTx(ctx, "delete", writeTx, func(tx pgx.Tx) error {
 		d := core.NewDictionary()
 
 		compiled, err := latestSchema(ctx, tx, d)

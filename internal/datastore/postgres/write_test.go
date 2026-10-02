@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // publisher takes a team itself, so an unknown subject relation read as none would pass there.
@@ -96,21 +98,14 @@ func stored(t *testing.T, s *Store, table string) []string {
 		t.Fatalf("read %s: %v", table, err)
 	}
 
-	defer rows.Close()
-
-	var out []string
-
-	for rows.Next() {
-		var u Tuple
-		if err := rows.Scan(&u.ResourceType, &u.ResourceID, &u.Relation, &u.SubjectType, &u.SubjectID, &u.SubjectRelation); err != nil {
-			t.Fatalf("read %s: %v", table, err)
-		}
-
-		out = append(out, u.String())
+	read, err := pgx.CollectRows(rows, scanTuple)
+	if err != nil {
+		t.Fatalf("read %s: %v", table, err)
 	}
 
-	if err := rows.Err(); err != nil {
-		t.Fatalf("read %s: %v", table, err)
+	out := make([]string, 0, len(read))
+	for _, u := range read {
+		out = append(out, u.String())
 	}
 
 	slices.Sort(out)
