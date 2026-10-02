@@ -74,7 +74,7 @@ const (
 
 // Write applies updates in one transaction, checked against the newest schema.
 func (s *Store) Write(ctx context.Context, updates []Update) error {
-	return s.inTx(ctx, "write", func(tx pgx.Tx) error {
+	return s.inTx(ctx, "write", writeTx, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, schemaLockShared); err != nil {
 			return fmt.Errorf("postgres: write: %w", err)
 		}

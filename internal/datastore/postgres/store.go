@@ -30,10 +30,18 @@ func (s *Store) Close() {
 	s.pool.Close()
 }
 
-// inTx runs fn in a transaction, and commits unless fn fails.
+var (
+	// writeTx: each statement sees the latest commit, so nothing is stale after a lock wait or a racing write.
+	writeTx = pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
+
+	// readTx: every statement sees the first one's snapshot, so a read's revision and rows agree.
+	readTx = pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
+)
+
+// inTx runs fn in a transaction and commits unless fn fails.
 // fn's errors come back as they are; op names the step in the others.
-func (s *Store) inTx(ctx context.Context, op string, fn func(pgx.Tx) error) error {
-	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+func (s *Store) inTx(ctx context.Context, op string, opts pgx.TxOptions, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.BeginTx(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("postgres: %s: %w", op, err)
 	}
