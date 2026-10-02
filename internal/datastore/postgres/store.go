@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -27,4 +28,25 @@ func Open(ctx context.Context, connString string) (*Store, error) {
 // Close closes every connection.
 func (s *Store) Close() {
 	s.pool.Close()
+}
+
+// inTx runs fn in a transaction, and commits unless fn fails.
+// fn's errors come back as they are; op names the step in the others.
+func (s *Store) inTx(ctx context.Context, op string, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("postgres: %s: %w", op, err)
+	}
+
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if err := fn(tx); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("postgres: %s: %w", op, err)
+	}
+
+	return nil
 }

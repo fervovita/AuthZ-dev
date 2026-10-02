@@ -218,6 +218,23 @@ func (s *Schema) ExclusionReachable() []RelationRef {
 	return slices.Clone(s.reachable)
 }
 
+// Relations returns every relation that stores tuples, sorted. Permissions are left out.
+func (s *Schema) Relations() []RelationRef {
+	out := make([]RelationRef, 0, len(s.allowed))
+	for ref := range s.allowed {
+		out = append(out, ref)
+	}
+
+	sortRefs(out)
+
+	return out
+}
+
+// Accepted returns the subject types r accepts, in the order they were given. A permission accepts none.
+func (s *Schema) Accepted(r RelationRef) []SubjectType {
+	return slices.Clone(s.allowed[r])
+}
+
 // SchemaBuilder collects relation and permission definitions. Build validates them together.
 // Defining the same relation twice, by either method, is an error reported by Build.
 type SchemaBuilder struct {

@@ -705,6 +705,36 @@ func TestSchemaRelationCopiesTheAcceptedTypes(t *testing.T) {
 	}
 }
 
+func TestSchemaRelationsLeavesOutPermissions(t *testing.T) {
+	t.Parallel()
+
+	want := []RelationRef{docRel(rViewer), docRel(rOwner), docRel(rBanned), teamRel(rMember)}
+	if got := validSchema(t).Relations(); !slices.Equal(got, want) {
+		t.Errorf("Relations = %+v; want %+v", got, want)
+	}
+}
+
+func TestSchemaAccepted(t *testing.T) {
+	t.Parallel()
+
+	s := validSchema(t)
+
+	want := []SubjectType{DirectType(tUser), WildcardType(tUser), DirectType(tTeam), WildcardType(tTeam), UsersetType(tTeam, rMember)}
+	if got := s.Accepted(docRel(rViewer)); !slices.Equal(got, want) {
+		t.Errorf("Accepted(viewer) = %+v; want %+v", got, want)
+	}
+
+	if got := s.Accepted(docRel(rView)); got != nil {
+		t.Errorf("Accepted(view) = %+v; want none from a permission", got)
+	}
+
+	s.Accepted(docRel(rViewer))[0] = DirectType(tDoc)
+
+	if s.Allows(docRel(rViewer), DirectType(tDoc)) {
+		t.Error("the caller reached in through the returned slice")
+	}
+}
+
 func TestOpString(t *testing.T) {
 	t.Parallel()
 

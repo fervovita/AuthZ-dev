@@ -16,21 +16,46 @@ const testSchema = `
 
 	definition team {
 		relation member: user | team#member
+		relation viewer: user
 	}
 
 	definition document {
-		relation viewer: user | user:* | team#member
+		relation viewer: user | user:* | team | team#member
 		relation publisher: team
 		relation banned: user
 		permission view = viewer - banned
 	}
 `
 
+// edit returns testSchema with each edit's first string replaced by its second.
+func edit(t *testing.T, edits ...[2]string) string {
+	t.Helper()
+
+	s := testSchema
+
+	for _, e := range edits {
+		if !strings.Contains(s, e[0]) {
+			t.Fatalf("testSchema no longer contains %q", e[0])
+		}
+
+		s = strings.Replace(s, e[0], e[1], 1)
+	}
+
+	return s
+}
+
 // schemaStore opens a Store on a fresh database, migrated and holding testSchema.
 func schemaStore(t *testing.T) *Store {
 	t.Helper()
 
-	s := openStore(t, newDatabase(t))
+	return schemaStoreOn(t, newDatabase(t))
+}
+
+// schemaStoreOn is schemaStore on the database connString names.
+func schemaStoreOn(t *testing.T, connString string) *Store {
+	t.Helper()
+
+	s := openStore(t, connString)
 
 	if err := s.Migrate(t.Context()); err != nil {
 		t.Fatalf("Migrate: %v", err)
@@ -263,10 +288,7 @@ func TestWriteChecksTheNewestSchema(t *testing.T) {
 
 	s := schemaStore(t)
 
-	narrowed := strings.Replace(testSchema, "relation viewer: user | user:* | team#member", "relation viewer: user | user:*", 1)
-	if narrowed == testSchema {
-		t.Fatal("testSchema no longer declares document#viewer as expected")
-	}
+	narrowed := edit(t, [2]string{"viewer: user | user:* | team | team#member", "viewer: user | user:* | team"})
 
 	if err := s.WriteSchema(t.Context(), narrowed); err != nil {
 		t.Fatalf("WriteSchema: %v", err)
