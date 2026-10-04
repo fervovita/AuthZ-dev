@@ -9,8 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// maxTupleLocks is the most tuples a request locks one by one. A larger request locks their relations whole,
-// so no request fills the lock table every session shares.
+// maxTupleLocks is the most tuples a request locks one by one. A larger request is checked first and then
+// locks their relations whole, so no request fills the lock table every session shares.
 const maxTupleLocks = 64
 
 // lock names one advisory lock a request takes and the mode it takes it in.
@@ -62,7 +62,7 @@ func ordered(locks []lock) []lock {
 
 // writeLocks returns the locks Write takes for updates.
 func writeLocks(updates []Update) []lock {
-	whole := len(updates) > maxTupleLocks
+	whole := large(updates)
 
 	locks := []lock{schemaLock(false)}
 	for _, u := range updates {
@@ -73,6 +73,11 @@ func writeLocks(updates []Update) []lock {
 	}
 
 	return locks
+}
+
+// large reports whether updates are too many to lock tuple by tuple.
+func large(updates []Update) bool {
+	return len(updates) > maxTupleLocks
 }
 
 func schemaLock(exclusive bool) lock {

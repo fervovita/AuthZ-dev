@@ -32,10 +32,6 @@ func (f Filter) String() string {
 // Writes to f's relation wait until it ends.
 func (s *Store) DeleteMatching(ctx context.Context, f Filter) error {
 	return s.inTx(ctx, "delete", writeTx, func(tx pgx.Tx) error {
-		if err := acquire(ctx, tx, "delete", []lock{relationLock(f.ResourceType, f.Relation, true)}); err != nil {
-			return err
-		}
-
 		d := core.NewDictionary()
 
 		compiled, err := latestSchema(ctx, tx, d)
@@ -53,6 +49,10 @@ func (s *Store) DeleteMatching(ctx context.Context, f Filter) error {
 
 		if err := checkFilter(compiled, d, f); err != nil {
 			return fmt.Errorf("%w: filter %s: %w", ErrInvalid, f, err)
+		}
+
+		if err := acquire(ctx, tx, "delete", []lock{relationLock(f.ResourceType, f.Relation, true)}); err != nil {
+			return err
 		}
 
 		cond, args := f.where()

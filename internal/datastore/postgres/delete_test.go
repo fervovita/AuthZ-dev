@@ -3,10 +3,12 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fervovita/AuthZ-dev/internal/core"
 )
@@ -154,6 +156,23 @@ func TestDeleteMatchingRefusesBeforeAnySchema(t *testing.T) {
 
 	if err := s.DeleteMatching(t.Context(), filter("document#viewer")); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("DeleteMatching = %v; want ErrInvalid", err)
+	}
+}
+
+// A filter the schema refuses is turned away before it locks: it does not wait for the request in flight on its relation.
+func TestDeleteMatchingRefusesBeforeLocking(t *testing.T) {
+	t.Parallel()
+
+	s := schemaStore(t)
+
+	hold(t, s, touch("document:d1#viewer@user:a"))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	err := s.DeleteMatching(ctx, filter("document#viewer@robot"))
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "document#viewer does not accept robot") {
+		t.Fatalf("DeleteMatching = %v; want ErrInvalid saying document#viewer does not accept robot, without a wait", err)
 	}
 }
 

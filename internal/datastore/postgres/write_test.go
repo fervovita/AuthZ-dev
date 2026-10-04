@@ -208,6 +208,15 @@ func TestWriteRacingRequestsLeaveAPairWholeOrGone(t *testing.T) {
 	}
 }
 
+// hold takes the locks a Write of updates takes and keeps them to the end of the test, as a request in flight would.
+func hold(t *testing.T, s *Store, updates ...Update) {
+	t.Helper()
+
+	if err := acquire(t.Context(), begin(t, s), "hold", writeLocks(updates)); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+}
+
 // While a request is in flight, requests elsewhere go through at once, and those over its tuple, its relation
 // as a whole or the schema wait for it.
 func TestWriteHoldsOnlyWhatItTouches(t *testing.T) {
@@ -215,10 +224,7 @@ func TestWriteHoldsOnlyWhatItTouches(t *testing.T) {
 
 	s := schemaStore(t)
 
-	held := begin(t, s)
-	if err := acquire(t.Context(), held, "hold", writeLocks([]Update{touch("document:d1#viewer@user:a")})); err != nil {
-		t.Fatalf("acquire: %v", err)
-	}
+	hold(t, s, touch("document:d1#viewer@user:a"))
 
 	for _, c := range []struct {
 		name  string
@@ -260,6 +266,24 @@ func TestWriteHoldsOnlyWhatItTouches(t *testing.T) {
 		if waited := errors.Is(err, context.DeadlineExceeded); waited != c.waits || (!waited && err != nil) {
 			t.Errorf("%s: err = %v; want it to wait: %v", c.name, err, c.waits)
 		}
+	}
+}
+
+// A large request locks every relation it names, so one the schema refuses is turned away before it locks:
+// it does not wait for the request in flight on its relation.
+func TestWriteRefusesALargeRequestBeforeLocking(t *testing.T) {
+	t.Parallel()
+
+	s := schemaStore(t)
+
+	hold(t, s, touch("document:d1#viewer@user:a"))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	err := s.Write(ctx, append(touchMany("viewer", maxTupleLocks), touch("document:d1#editor@user:alice")))
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "document#editor is not defined") {
+		t.Fatalf("Write = %v; want ErrInvalid saying document#editor is not defined, without a wait", err)
 	}
 }
 

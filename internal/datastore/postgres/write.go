@@ -69,33 +69,21 @@ const (
 // Write applies updates in one transaction, checked against the newest schema.
 func (s *Store) Write(ctx context.Context, updates []Update) error {
 	return s.inTx(ctx, "write", writeTx, func(tx pgx.Tx) error {
+		// A large request locks every relation it names, so it is checked first:
+		// only relations a schema defines reach the lock table.
+		if large(updates) {
+			if err := checkUpdates(ctx, tx, updates); err != nil {
+				return err
+			}
+		}
+
 		if err := acquire(ctx, tx, "write", writeLocks(updates)); err != nil {
 			return err
 		}
 
-		d := core.NewDictionary()
-
-		compiled, err := latestSchema(ctx, tx, d)
-		if err != nil {
+		// The schema may have changed during the wait, and cannot change from here to the commit.
+		if err := checkUpdates(ctx, tx, updates); err != nil {
 			return err
-		}
-
-		if compiled == nil {
-			return fmt.Errorf("%w: no schema has been written", ErrInvalid)
-		}
-
-		seen := make(map[Tuple]int, len(updates))
-
-		for i, u := range updates {
-			if err := check(compiled, d, u); err != nil {
-				return fmt.Errorf("%w: updates[%d] %s: %w", ErrInvalid, i, u.Tuple, err)
-			}
-
-			if j, ok := seen[u.Tuple]; ok {
-				return fmt.Errorf("%w: updates[%d] %s: repeats updates[%d]", ErrInvalid, i, u.Tuple, j)
-			}
-
-			seen[u.Tuple] = i
 		}
 
 		for _, u := range updates {
@@ -116,6 +104,36 @@ func (s *Store) Write(ctx context.Context, updates []Update) error {
 
 		return nil
 	})
+}
+
+// checkUpdates reports why the newest schema tx sees refuses updates.
+func checkUpdates(ctx context.Context, tx pgx.Tx, updates []Update) error {
+	d := core.NewDictionary()
+
+	compiled, err := latestSchema(ctx, tx, d)
+	if err != nil {
+		return err
+	}
+
+	if compiled == nil {
+		return fmt.Errorf("%w: no schema has been written", ErrInvalid)
+	}
+
+	seen := make(map[Tuple]int, len(updates))
+
+	for i, u := range updates {
+		if err := check(compiled, d, u); err != nil {
+			return fmt.Errorf("%w: updates[%d] %s: %w", ErrInvalid, i, u.Tuple, err)
+		}
+
+		if j, ok := seen[u.Tuple]; ok {
+			return fmt.Errorf("%w: updates[%d] %s: repeats updates[%d]", ErrInvalid, i, u.Tuple, j)
+		}
+
+		seen[u.Tuple] = i
+	}
+
+	return nil
 }
 
 // check reports why compiled refuses u, looking names up in d without interning them.
