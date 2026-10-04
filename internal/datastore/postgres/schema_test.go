@@ -6,7 +6,6 @@ import (
 	"errors"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -232,26 +231,11 @@ func TestWriteSchemaRacingAWriteNeverStrandsATuple(t *testing.T) {
 
 		deleteMatching(t, s, filter("document#viewer@team#member"))
 
-		var (
-			schemaErr, writeErr error
-			wg                  sync.WaitGroup
+		errs := together(
+			func() error { return s.WriteSchema(t.Context(), narrowed) },
+			func() error { return s.Write(t.Context(), []Update{touch("document:d1#viewer@team:eng#member")}) },
 		)
-
-		start := make(chan struct{})
-
-		wg.Go(func() {
-			<-start
-
-			schemaErr = s.WriteSchema(t.Context(), narrowed)
-		})
-		wg.Go(func() {
-			<-start
-
-			writeErr = s.Write(t.Context(), []Update{touch("document:d1#viewer@team:eng#member")})
-		})
-
-		close(start)
-		wg.Wait()
+		schemaErr, writeErr := errs[0], errs[1]
 
 		schemaFirst := schemaErr == nil && errors.Is(writeErr, ErrInvalid)
 		writeFirst := writeErr == nil && errors.Is(schemaErr, ErrTuplesRemain)
