@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -91,4 +92,25 @@ func openStore(t *testing.T, connString string) *Store {
 	t.Cleanup(s.Close)
 
 	return s
+}
+
+// together starts every fn at once and returns their errors in fns order.
+func together(fns ...func() error) []error {
+	errs := make([]error, len(fns))
+	start := make(chan struct{})
+
+	var wg sync.WaitGroup
+
+	for i, fn := range fns {
+		wg.Go(func() {
+			<-start
+
+			errs[i] = fn()
+		})
+	}
+
+	close(start)
+	wg.Wait()
+
+	return errs
 }

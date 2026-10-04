@@ -4,9 +4,9 @@ package postgres
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -217,13 +217,21 @@ func TestWriteSchemaDropsWhatNoTupleUses(t *testing.T) {
 }
 
 // A schema write and a tuple write the new schema refuses, started together: exactly one goes through,
-// so the tuple is never stored under a schema that refuses it.
+// so the tuple is never stored under a schema that refuses it. Rounds take turns between one tuple and
+// a request large enough to be checked before it locks as well as after.
 func TestWriteSchemaRacingAWriteNeverStrandsATuple(t *testing.T) {
 	t.Parallel()
 
 	s := schemaStore(t)
 
 	narrowed := edit(t, [2]string{"viewer: user | user:* | team | team#member", "viewer: user | user:* | team"})
+
+	one := []Update{touch("document:d1#viewer@team:eng#member")}
+
+	many := make([]Update, maxTupleLocks+1)
+	for i := range many {
+		many[i] = touch(fmt.Sprintf("document:d%d#viewer@team:eng#member", i))
+	}
 
 	for i := range 50 {
 		if err := s.WriteSchema(t.Context(), testSchema); err != nil {
@@ -232,26 +240,16 @@ func TestWriteSchemaRacingAWriteNeverStrandsATuple(t *testing.T) {
 
 		deleteMatching(t, s, filter("document#viewer@team#member"))
 
-		var (
-			schemaErr, writeErr error
-			wg                  sync.WaitGroup
+		updates := one
+		if i%2 == 1 {
+			updates = many
+		}
+
+		errs := together(
+			func() error { return s.WriteSchema(t.Context(), narrowed) },
+			func() error { return s.Write(t.Context(), updates) },
 		)
-
-		start := make(chan struct{})
-
-		wg.Go(func() {
-			<-start
-
-			schemaErr = s.WriteSchema(t.Context(), narrowed)
-		})
-		wg.Go(func() {
-			<-start
-
-			writeErr = s.Write(t.Context(), []Update{touch("document:d1#viewer@team:eng#member")})
-		})
-
-		close(start)
-		wg.Wait()
+		schemaErr, writeErr := errs[0], errs[1]
 
 		schemaFirst := schemaErr == nil && errors.Is(writeErr, ErrInvalid)
 		writeFirst := writeErr == nil && errors.Is(schemaErr, ErrTuplesRemain)

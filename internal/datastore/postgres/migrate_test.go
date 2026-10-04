@@ -4,7 +4,6 @@ package postgres
 
 import (
 	"slices"
-	"sync"
 	"testing"
 )
 
@@ -30,25 +29,14 @@ func TestMigrateConcurrentCallersApplyOnce(t *testing.T) {
 
 	db := newDatabase(t)
 
-	errs := make([]error, servers)
-
-	var wg sync.WaitGroup
-
-	for i := range servers {
+	migrate := make([]func() error, servers)
+	for i := range migrate {
 		s := openStore(t, db)
 
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
-
-			errs[i] = s.Migrate(t.Context())
-		}()
+		migrate[i] = func() error { return s.Migrate(t.Context()) }
 	}
 
-	wg.Wait()
-
-	for i, err := range errs {
+	for i, err := range together(migrate...) {
 		if err != nil {
 			t.Errorf("server %d: Migrate: %v", i, err)
 		}

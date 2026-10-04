@@ -3,11 +3,12 @@
 package postgres
 
 import (
+	"context"
 	"errors"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -50,14 +51,7 @@ func edit(t *testing.T, edits ...[2]string) string {
 func schemaStore(t *testing.T) *Store {
 	t.Helper()
 
-	return schemaStoreOn(t, newDatabase(t))
-}
-
-// schemaStoreOn is schemaStore on the database connString names.
-func schemaStoreOn(t *testing.T, connString string) *Store {
-	t.Helper()
-
-	s := openStore(t, connString)
+	s := openStore(t, newDatabase(t))
 
 	if err := s.Migrate(t.Context()); err != nil {
 		t.Fatalf("Migrate: %v", err)
@@ -154,24 +148,8 @@ func TestWriteStoresAndLogsEverySubjectForm(t *testing.T) {
 	assertRows(t, s, "change_log", all...)
 }
 
-// Write applies its updates in its own order, not by reordering the slice it was given.
-func TestWriteLeavesTheCallersUpdatesInOrder(t *testing.T) {
-	t.Parallel()
-
-	s := schemaStore(t)
-
-	updates := []Update{touch("document:d1#viewer@user:alice"), touch("document:d1#publisher@team:eng")}
-	given := slices.Clone(updates)
-
-	write(t, s, updates...)
-
-	if !slices.Equal(updates, given) {
-		t.Errorf("updates = %v after Write; want %v", updates, given)
-	}
-}
-
-// Two requests over the same tuples, listed in opposite orders, must both succeed: neither may deadlock
-// on the other's row locks, nor fail to serialize behind the other's commit.
+// Two requests over the same tuples, listed in opposite orders, must both succeed: neither may wait on the other
+// in a cycle, nor fail to serialize behind the other's commit.
 func TestWriteRacingRequestsBothSucceed(t *testing.T) {
 	t.Parallel()
 
@@ -182,27 +160,130 @@ func TestWriteRacingRequestsBothSucceed(t *testing.T) {
 	for range 20 {
 		write(t, s, remove(a), remove(b))
 
-		errs := make([]error, 2)
+		errs := together(
+			func() error { return s.Write(t.Context(), []Update{touch(a), touch(b)}) },
+			func() error { return s.Write(t.Context(), []Update{touch(b), touch(a)}) },
+		)
 
-		var wg sync.WaitGroup
+		if err := errors.Join(errs...); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+}
 
-		for i, updates := range [][]Update{{touch(a), touch(b)}, {touch(b), touch(a)}} {
-			wg.Add(1)
+// Requests that add a pair and requests that remove it, all at once: the store ends with the pair whole or gone,
+// as some order of the requests would leave it. Rounds start from the pair whole and from it gone by turns.
+func TestWriteRacingRequestsLeaveAPairWholeOrGone(t *testing.T) {
+	t.Parallel()
 
-			go func() {
-				defer wg.Done()
+	s := schemaStore(t)
 
-				errs[i] = s.Write(t.Context(), updates)
-			}()
+	add := []Update{touch("document:p#viewer@user:u"), touch("document:q#viewer@user:u")}
+	drop := []Update{remove("document:p#viewer@user:u"), remove("document:q#viewer@user:u")}
+
+	requests := make([]func() error, 8)
+	for i := range requests {
+		updates := add
+		if i%2 == 1 {
+			updates = drop
 		}
 
-		wg.Wait()
+		requests[i] = func() error { return s.Write(t.Context(), updates) }
+	}
 
-		for _, err := range errs {
-			if err != nil {
-				t.Fatalf("Write: %v", err)
-			}
+	for i := range 100 {
+		if i%2 == 0 {
+			write(t, s, add...)
+		} else {
+			write(t, s, drop...)
 		}
+
+		if err := errors.Join(together(requests...)...); err != nil {
+			t.Fatalf("round %d: %v", i, err)
+		}
+
+		if got := stored(t, s, "tuples"); len(got) == 1 {
+			t.Fatalf("round %d: the store holds %q, half of the pair", i, got)
+		}
+	}
+}
+
+// hold takes the locks a Write of updates takes and keeps them to the end of the test, as a request in flight would.
+func hold(t *testing.T, s *Store, updates ...Update) {
+	t.Helper()
+
+	if err := acquire(t.Context(), begin(t, s), "hold", writeLocks(updates)); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+}
+
+// While a request is in flight, requests elsewhere go through at once, and those over its tuple, its relation
+// as a whole or the schema wait for it.
+func TestWriteHoldsOnlyWhatItTouches(t *testing.T) {
+	t.Parallel()
+
+	s := schemaStore(t)
+
+	hold(t, s, touch("document:d1#viewer@user:a"))
+
+	for _, c := range []struct {
+		name  string
+		waits bool
+		do    func(context.Context) error
+	}{
+		{"another tuple", false, func(ctx context.Context) error {
+			return s.Write(ctx, []Update{touch("document:d1#viewer@user:b")})
+		}},
+		{"another relation's filter", false, func(ctx context.Context) error {
+			return s.DeleteMatching(ctx, filter("document#banned"))
+		}},
+		{"a large request on another relation", false, func(ctx context.Context) error {
+			return s.Write(ctx, touchMany("banned", maxTupleLocks+1))
+		}},
+		{"the same tuple", true, func(ctx context.Context) error {
+			return s.Write(ctx, []Update{remove("document:d1#viewer@user:a")})
+		}},
+		{"its relation's filter", true, func(ctx context.Context) error {
+			return s.DeleteMatching(ctx, filter("document#viewer"))
+		}},
+		{"a large request on its relation", true, func(ctx context.Context) error {
+			return s.Write(ctx, touchMany("viewer", maxTupleLocks+1))
+		}},
+		{"a schema", true, func(ctx context.Context) error {
+			return s.WriteSchema(ctx, testSchema)
+		}},
+	} {
+		limit := 5 * time.Second
+		if c.waits {
+			limit = 200 * time.Millisecond
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), limit)
+		err := c.do(ctx)
+
+		cancel()
+
+		if waited := errors.Is(err, context.DeadlineExceeded); waited != c.waits || (!waited && err != nil) {
+			t.Errorf("%s: err = %v; want it to wait: %v", c.name, err, c.waits)
+		}
+	}
+}
+
+// A large request locks every relation it names, so one the schema refuses is turned away before it locks:
+// it does not wait for the request in flight on its relation.
+func TestWriteRefusesALargeRequestBeforeLocking(t *testing.T) {
+	t.Parallel()
+
+	s := schemaStore(t)
+
+	hold(t, s, touch("document:d1#viewer@user:a"))
+
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+
+	err := s.Write(ctx, append(touchMany("viewer", maxTupleLocks), touch("document:d1#editor@user:alice")))
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "document#editor is not defined") {
+		t.Fatalf("Write = %v; want ErrInvalid saying document#editor is not defined, without a wait", err)
 	}
 }
 

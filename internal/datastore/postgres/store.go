@@ -31,7 +31,7 @@ func (s *Store) Close() {
 }
 
 var (
-	// writeTx: each statement sees the latest commit, so nothing is stale after a lock wait or a racing write.
+	// writeTx: each statement sees the latest commit, so nothing is stale after a lock wait.
 	writeTx = pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
 
 	// readTx: every statement sees the first one's snapshot, so a read's revision and rows agree.

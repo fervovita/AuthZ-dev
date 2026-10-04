@@ -18,13 +18,6 @@ var ErrTuplesRemain = errors.New("postgres: tuples remain")
 // schemaLabel names the source in compile errors, since a schema arrives as text.
 const schemaLabel = "schema"
 
-// Write holds the schema lock shared and WriteSchema holds it exclusively, so a schema change sees
-// every tuple written under the schema it replaces, and no tuple is written under a replaced one.
-const (
-	schemaLockShared    = `SELECT pg_advisory_xact_lock_shared(hashtextextended('datastore.postgres.schema', 0))`
-	schemaLockExclusive = `SELECT pg_advisory_xact_lock(hashtextextended('datastore.postgres.schema', 0))`
-)
-
 // WriteSchema stores source as the newest schema.
 // It refuses to drop a relation, or a subject type a relation accepts, while tuples still use it.
 func (s *Store) WriteSchema(ctx context.Context, source string) error {
@@ -36,8 +29,8 @@ func (s *Store) WriteSchema(ctx context.Context, source string) error {
 	}
 
 	return s.inTx(ctx, "write schema", writeTx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, schemaLockExclusive); err != nil {
-			return fmt.Errorf("postgres: write schema: %w", err)
+		if err := acquire(ctx, tx, "write schema", []lock{schemaLock(true)}); err != nil {
+			return err
 		}
 
 		prev, err := latestSchema(ctx, tx, d)
