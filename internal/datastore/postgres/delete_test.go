@@ -4,11 +4,8 @@ package postgres
 
 import (
 	"errors"
-	"fmt"
-	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/fervovita/AuthZ-dev/internal/core"
@@ -160,38 +157,31 @@ func TestDeleteMatchingRefusesBeforeAnySchema(t *testing.T) {
 	}
 }
 
-// The rows are stored in the reverse of key order, and this connection makes the planner read them
-// as stored, as it may choose to on a large table. Locking them in that order would cross Write's.
-func TestDeleteMatchingRacingAWriteBothSucceed(t *testing.T) {
+// A filter delete and a request that touches a stored tuple under the filter and adds another, started together:
+// the store ends with both or neither, as one order or the other would leave it.
+func TestDeleteMatchingRacingAWriteLeavesBothOrNeither(t *testing.T) {
 	t.Parallel()
 
-	u, err := url.Parse(newDatabase(t))
-	if err != nil {
-		t.Fatalf("parse the database URL: %v", err)
-	}
+	s := schemaStore(t)
 
-	q := u.Query()
-	q.Set("options", "-c enable_indexscan=off -c enable_bitmapscan=off")
-	u.RawQuery = strings.ReplaceAll(q.Encode(), "+", "%20") // pgx passes + on as it is, not as a space
+	const kept, added = "document:kept#viewer@user:u", "document:added#viewer@user:u"
 
-	s := schemaStoreOn(t, u.String())
+	for i := range 50 {
+		write(t, s, touch(kept))
 
-	for i := range 20 {
-		a, b := fmt.Sprintf("document:d1#viewer@user:a%d", i), fmt.Sprintf("document:d1#viewer@user:b%d", i)
-
-		write(t, s, touch(b))
-		write(t, s, touch(a))
-
-		errs := make([]error, 2)
-
-		var wg sync.WaitGroup
-
-		wg.Go(func() { errs[0] = s.Write(t.Context(), []Update{remove(a), remove(b)}) })
-		wg.Go(func() { errs[1] = s.DeleteMatching(t.Context(), filter("document#viewer@user")) })
-		wg.Wait()
+		errs := together(
+			func() error { return s.DeleteMatching(t.Context(), filter("document#viewer")) },
+			func() error { return s.Write(t.Context(), []Update{touch(kept), touch(added)}) },
+		)
 
 		if err := errors.Join(errs...); err != nil {
 			t.Fatalf("round %d: %v", i, err)
 		}
+
+		if got := stored(t, s, "tuples"); len(got) == 1 {
+			t.Fatalf("round %d: the store holds %q; want both or neither", i, got)
+		}
+
+		deleteMatching(t, s, filter("document#viewer"))
 	}
 }

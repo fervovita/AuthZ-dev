@@ -1,12 +1,9 @@
 package postgres
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
-	"slices"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -53,9 +50,6 @@ type Update struct {
 
 const columns = `resource_type, resource_id, relation, subject_type, subject_id, subject_relation`
 
-// keyColumns is the primary key's order, not the table's.
-const keyColumns = `resource_type, relation, resource_id, subject_type, subject_id, subject_relation`
-
 // Each statement logs its tuple only when it changed one: a conflict or a missing row returns nothing to log.
 const (
 	touchSQL = `WITH changed AS (
@@ -75,8 +69,8 @@ const (
 // Write applies updates in one transaction, checked against the newest schema.
 func (s *Store) Write(ctx context.Context, updates []Update) error {
 	return s.inTx(ctx, "write", writeTx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, schemaLockShared); err != nil {
-			return fmt.Errorf("postgres: write: %w", err)
+		if err := acquire(ctx, tx, "write", writeLocks(updates)); err != nil {
+			return err
 		}
 
 		d := core.NewDictionary()
@@ -104,11 +98,7 @@ func (s *Store) Write(ctx context.Context, updates []Update) error {
 			seen[u.Tuple] = i
 		}
 
-		// Applying in one order keeps two requests over the same tuples from each holding one and waiting on the other.
-		ordered := slices.Clone(updates)
-		slices.SortFunc(ordered, func(a, b Update) int { return compareTuples(a.Tuple, b.Tuple) })
-
-		for _, u := range ordered {
+		for _, u := range updates {
 			var sql string
 
 			switch u.Op {
@@ -177,16 +167,4 @@ func checkFilter(compiled *core.Schema, d *core.Dictionary, f Filter) error {
 	}
 
 	return nil
-}
-
-// compareTuples orders tuples as the primary key does.
-func compareTuples(a, b Tuple) int {
-	return cmp.Or(
-		strings.Compare(a.ResourceType, b.ResourceType),
-		strings.Compare(a.Relation, b.Relation),
-		strings.Compare(a.ResourceID, b.ResourceID),
-		strings.Compare(a.SubjectType, b.SubjectType),
-		strings.Compare(a.SubjectID, b.SubjectID),
-		strings.Compare(a.SubjectRelation, b.SubjectRelation),
-	)
 }

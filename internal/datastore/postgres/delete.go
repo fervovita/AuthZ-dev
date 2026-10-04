@@ -29,8 +29,13 @@ func (f Filter) String() string {
 }
 
 // DeleteMatching removes every tuple f matches in one transaction, checked against the newest schema.
+// Writes to f's relation wait until it ends.
 func (s *Store) DeleteMatching(ctx context.Context, f Filter) error {
 	return s.inTx(ctx, "delete", writeTx, func(tx pgx.Tx) error {
+		if err := acquire(ctx, tx, "delete", []lock{relationLock(f.ResourceType, f.Relation, true)}); err != nil {
+			return err
+		}
+
 		d := core.NewDictionary()
 
 		compiled, err := latestSchema(ctx, tx, d)
@@ -52,14 +57,7 @@ func (s *Store) DeleteMatching(ctx context.Context, f Filter) error {
 
 		cond, args := f.where()
 
-		// Rows are locked in key order, as Write takes them, whatever order the plan reads them in.
-		sql := `WITH matched AS MATERIALIZED (
-				SELECT ` + columns + ` FROM tuples WHERE ` + cond + `
-				ORDER BY ` + keyColumns + `
-				FOR UPDATE),
-			changed AS (
-				DELETE FROM tuples WHERE (` + columns + `) IN (SELECT ` + columns + ` FROM matched)
-				RETURNING ` + columns + `)
+		sql := `WITH changed AS (DELETE FROM tuples WHERE ` + cond + ` RETURNING ` + columns + `)
 			INSERT INTO change_log (` + columns + `) SELECT ` + columns + ` FROM changed`
 
 		if _, err := tx.Exec(ctx, sql, args...); err != nil {

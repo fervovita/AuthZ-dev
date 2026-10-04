@@ -237,7 +237,7 @@ func TestChangesCarriesAnEmptySchema(t *testing.T) {
 	}
 }
 
-// begin opens a transaction for apply to write in, so a test can interleave writers by hand.
+// begin opens a transaction a test drives by hand, rolled back when the test ends.
 func begin(t *testing.T, s *Store) pgx.Tx {
 	t.Helper()
 
