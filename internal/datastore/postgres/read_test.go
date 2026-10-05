@@ -29,6 +29,10 @@ func follow(t *testing.T, s *Store) *follower {
 		t.Fatalf("Snapshot: %v", err)
 	}
 
+	return newFollower(s, st)
+}
+
+func newFollower(s *Store, st State) *follower {
 	f := &follower{s: s, rev: st.Revision, schema: st.Schema, tuples: make(map[Tuple]bool)}
 	for _, u := range st.Tuples {
 		f.tuples[u] = true
@@ -45,6 +49,12 @@ func (f *follower) catchUp(t *testing.T) Delta {
 		t.Fatalf("Changes: %v", err)
 	}
 
+	f.advance(d)
+
+	return d
+}
+
+func (f *follower) advance(d Delta) {
 	f.rev = d.Revision
 
 	if d.Schema != nil {
@@ -58,8 +68,6 @@ func (f *follower) catchUp(t *testing.T) Delta {
 			delete(f.tuples, c.Tuple)
 		}
 	}
-
-	return d
 }
 
 // held returns the tuples f holds as sorted strings, the form stored returns.
