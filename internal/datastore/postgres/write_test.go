@@ -31,14 +31,14 @@ const testSchema = `
 `
 
 // edit returns testSchema with each edit's first string replaced by its second.
-func edit(t *testing.T, edits ...[2]string) string {
-	t.Helper()
+func edit(tb testing.TB, edits ...[2]string) string {
+	tb.Helper()
 
 	s := testSchema
 
 	for _, e := range edits {
 		if !strings.Contains(s, e[0]) {
-			t.Fatalf("testSchema no longer contains %q", e[0])
+			tb.Fatalf("testSchema no longer contains %q", e[0])
 		}
 
 		s = strings.Replace(s, e[0], e[1], 1)
@@ -48,17 +48,17 @@ func edit(t *testing.T, edits ...[2]string) string {
 }
 
 // schemaStore opens a Store on a fresh database, migrated and holding testSchema.
-func schemaStore(t *testing.T) *Store {
-	t.Helper()
+func schemaStore(tb testing.TB) *Store {
+	tb.Helper()
 
-	s := openStore(t, newDatabase(t))
+	s := openStore(tb, newDatabase(tb))
 
-	if err := s.Migrate(t.Context()); err != nil {
-		t.Fatalf("Migrate: %v", err)
+	if err := s.Migrate(tb.Context()); err != nil {
+		tb.Fatalf("Migrate: %v", err)
 	}
 
-	if err := s.WriteSchema(t.Context(), testSchema); err != nil {
-		t.Fatalf("WriteSchema: %v", err)
+	if err := s.WriteSchema(tb.Context(), testSchema); err != nil {
+		tb.Fatalf("WriteSchema: %v", err)
 	}
 
 	return s
