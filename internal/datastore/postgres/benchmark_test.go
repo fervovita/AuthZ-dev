@@ -43,10 +43,14 @@ func benchmarkWrite(b *testing.B, s *Store, n int) {
 	b.ReportAllocs()
 
 	for b.Loop() {
+		b.StopTimer()
+
 		for i := range updates {
 			updates[i] = Update{Touch, benchTuple(next)}
 			next++
 		}
+
+		b.StartTimer()
 
 		if err := s.Write(ctx, updates); err != nil {
 			b.Fatalf("Write: %v", err)
