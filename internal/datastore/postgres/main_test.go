@@ -55,24 +55,24 @@ func run(m *testing.M) int {
 }
 
 // newDatabase creates an empty database and returns its URL. The container's end removes it.
-func newDatabase(t *testing.T) string {
-	t.Helper()
+func newDatabase(tb testing.TB) string {
+	tb.Helper()
 
-	admin, err := pgx.Connect(t.Context(), adminURL)
+	admin, err := pgx.Connect(tb.Context(), adminURL)
 	if err != nil {
-		t.Fatalf("connect: %v", err)
+		tb.Fatalf("connect: %v", err)
 	}
 
 	defer func() { _ = admin.Close(context.Background()) }()
 
 	name := "test_" + strconv.FormatInt(databases.Add(1), 10)
-	if _, err := admin.Exec(t.Context(), "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
-		t.Fatalf("create database: %v", err)
+	if _, err := admin.Exec(tb.Context(), "CREATE DATABASE "+pgx.Identifier{name}.Sanitize()); err != nil {
+		tb.Fatalf("create database: %v", err)
 	}
 
 	u, err := url.Parse(adminURL)
 	if err != nil {
-		t.Fatalf("parse %q: %v", adminURL, err)
+		tb.Fatalf("parse %q: %v", adminURL, err)
 	}
 
 	u.Path = "/" + name
@@ -81,15 +81,15 @@ func newDatabase(t *testing.T) string {
 }
 
 // openStore opens a Store closed at the end of the test.
-func openStore(t *testing.T, connString string) *Store {
-	t.Helper()
+func openStore(tb testing.TB, connString string) *Store {
+	tb.Helper()
 
-	s, err := Open(t.Context(), connString)
+	s, err := Open(tb.Context(), connString)
 	if err != nil {
-		t.Fatalf("Open: %v", err)
+		tb.Fatalf("Open: %v", err)
 	}
 
-	t.Cleanup(s.Close)
+	tb.Cleanup(s.Close)
 
 	return s
 }

@@ -1,4 +1,4 @@
-.PHONY: all test race integration lint fmt bench cover
+.PHONY: all test race integration lint fmt bench bench-integration cover
 
 all: lint integration
 
@@ -19,6 +19,9 @@ fmt:
 
 bench:
 	go test -run '^$$' -bench . -benchmem ./...
+
+bench-integration:
+	go test -run '^$$' -bench . -benchmem -tags integration ./...
 
 cover:
 	go test -coverprofile=coverage.out ./... && go tool cover -func=coverage.out
