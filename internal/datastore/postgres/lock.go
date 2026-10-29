@@ -92,3 +92,7 @@ func relationLock(typ, rel string, exclusive bool) lock {
 func tupleLock(t Tuple) lock {
 	return lock{"datastore.postgres.tuple:" + t.String(), true}
 }
+
+func pruneLock() lock {
+	return lock{"datastore.postgres.prune", true}
+}

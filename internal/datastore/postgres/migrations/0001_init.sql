@@ -24,6 +24,16 @@ CREATE TABLE change_log (
 
 CREATE INDEX change_log_xid ON change_log (xid);
 
+-- Where change_log may be cut.
+-- The oldest mark is where the log starts.
+CREATE TABLE log_marks (
+    xid       xid8 PRIMARY KEY,
+    marked_at timestamptz NOT NULL
+);
+
+-- Until Prune first cuts it, the log starts before every transaction.
+INSERT INTO log_marks (xid, marked_at) VALUES ('0', '-infinity');
+
 -- Every schema written, in the language's source. xid orders each version among the tuple writes.
 CREATE TABLE schema_versions (
     version bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

@@ -68,7 +68,7 @@ func assertMigrated(t *testing.T, s *Store) {
 		t.Errorf("migrations = %v; want %v", got, want)
 	}
 
-	for _, table := range []string{"tuples", "change_log", "schema_versions"} {
+	for _, table := range []string{"tuples", "change_log", "log_marks", "schema_versions"} {
 		var exists bool
 		if err := s.pool.QueryRow(t.Context(), `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&exists); err != nil {
 			t.Fatalf("look up %s: %v", table, err)

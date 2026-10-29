@@ -177,6 +177,35 @@ func BenchmarkChanges(b *testing.B) {
 	}
 }
 
+// BenchmarkPrune reads how long a cut takes, by the changes it drops.
+func BenchmarkPrune(b *testing.B) {
+	for _, n := range storeSizes {
+		b.Run(fmt.Sprintf("changes=%d", n), func(b *testing.B) {
+			s := schemaStore(b)
+			ctx := b.Context()
+
+			b.ReportAllocs()
+
+			for b.Loop() {
+				b.StopTimer()
+				exec(b, s, `TRUNCATE tuples, change_log`)
+				seed(b, s, 0, n)
+				b.StartTimer()
+
+				if err := s.Prune(ctx, 0); err != nil {
+					b.Fatalf("Prune: %v", err)
+				}
+			}
+
+			// A cut that fell before the seed would time a prune of nothing.
+			var left int
+			if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM change_log`).Scan(&left); err != nil || left != 0 {
+				b.Fatalf("change_log after Prune: %d lines, %v; want none", left, err)
+			}
+		})
+	}
+}
+
 // seedSQL stores and logs $2 tuples, starting at tuple $1.
 const seedSQL = `WITH changed AS (
 		INSERT INTO tuples (` + columns + `)
@@ -191,14 +220,6 @@ func seed(tb testing.TB, s *Store, first, n int) {
 
 	exec(tb, s, seedSQL, first, n)
 	exec(tb, s, `VACUUM (ANALYZE) tuples, change_log`)
-}
-
-func exec(tb testing.TB, s *Store, sql string, args ...any) {
-	tb.Helper()
-
-	if _, err := s.pool.Exec(tb.Context(), sql, args...); err != nil {
-		tb.Fatalf("%s: %v", sql, err)
-	}
 }
 
 // benchTuple returns tuple i of document#viewer.

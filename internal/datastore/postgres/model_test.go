@@ -63,8 +63,9 @@ func runModel(t *testing.T, open func(*testing.T) *Store) {
 			for step := range modelSteps {
 				at := fmt.Sprintf("seed %d, step %d", seed, step)
 
-				// Of twenty requests: nine writes, one large write, five filter deletes, five schema changes.
-				switch n := rnd.IntN(20); {
+				// Of twenty-one requests: nine writes, one large write, five filter deletes, five schema changes
+				// and one prune that keeps nothing.
+				switch n := rnd.IntN(21); {
 				case n < 9:
 					updates := randomUpdates(rnd)
 
@@ -80,7 +81,7 @@ func runModel(t *testing.T, open func(*testing.T) *Store) {
 
 					agree(t, at, fmt.Sprintf("DeleteMatching(%#v)", by), s.DeleteMatching(t.Context(), by), deletes.note(m.delete(by)))
 
-				default:
+				case n < 20:
 					source := randomSchema(rnd)
 
 					// 50% of the time, clear what the schema would strand first, so that it goes through.
@@ -91,6 +92,11 @@ func runModel(t *testing.T, open func(*testing.T) *Store) {
 					}
 
 					agree(t, at, fmt.Sprintf("WriteSchema(%q)", source), s.WriteSchema(t.Context(), source), schemas.note(m.writeSchema(source)))
+
+				default:
+					agree(t, at, "Prune(0)", s.Prune(t.Context(), 0), nil)
+
+					m.pruned = true
 				}
 
 				// A reader catches up after a few requests, not after each: a delta then spans several.
@@ -108,11 +114,13 @@ func runModel(t *testing.T, open func(*testing.T) *Store) {
 			m.checkChanges(t, at, f)
 			m.checkSnapshot(t, at, s)
 
-			t.Logf("seed %d: writes %s; large writes %s; deletes %s; schemas %s", seed, &writes, &large, &deletes, &schemas)
+			t.Logf("seed %d: writes %s; large writes %s; deletes %s; schemas %s; the reader caught up %d times, started over %d",
+				seed, &writes, &large, &deletes, &schemas, m.caughtUp, m.startedOver)
 
 			if writes.taken == 0 || writes.invalid == 0 || large.taken == 0 || large.invalid == 0 ||
 				deletes.taken == 0 || deletes.invalid == 0 ||
-				schemas.taken == 0 || schemas.invalid == 0 || schemas.remain == 0 {
+				schemas.taken == 0 || schemas.invalid == 0 || schemas.remain == 0 ||
+				m.caughtUp == 0 || m.startedOver == 0 {
 				t.Errorf("seed %d: one kind of answer never came up, so the run compared little", seed)
 			}
 		})
@@ -158,9 +166,12 @@ type model struct {
 	names    *core.Dictionary
 	tuples   map[Tuple]bool
 
-	// What has changed since a reader last caught up.
+	// What has happened since the reader last caught up
 	changed       map[Tuple]bool
 	schemaChanged bool
+	pruned        bool // Prune ran: only then may Changes refuse the reader
+
+	caughtUp, startedOver int // how often the reader did each
 }
 
 func newModel() *model {
@@ -321,10 +332,24 @@ func (m *model) held() []string {
 
 // checkChanges has f catch up, and fails unless Changes told it of each tuple that changed since it last
 // did, once and as it now stands, and of the schema only if one was written.
+// After a Prune, Changes may refuse instead: f then starts over from a Snapshot that must hold what the model does.
 func (m *model) checkChanges(t *testing.T, at string, f *follower) {
 	t.Helper()
 
 	d, err := f.s.Changes(t.Context(), f.rev)
+	if errors.Is(err, ErrPruned) {
+		if !m.pruned {
+			t.Fatalf("%s: Changes = ErrPruned, though nothing was pruned since the reader caught up", at)
+		}
+
+		f.startOver(m.checkSnapshot(t, at, f.s))
+		clear(m.changed)
+		m.schemaChanged, m.pruned = false, false
+		m.startedOver++
+
+		return
+	}
+
 	if err != nil {
 		t.Fatalf("%s: Changes: %v", at, err)
 	}
@@ -357,15 +382,16 @@ func (m *model) checkChanges(t *testing.T, at string, f *follower) {
 
 	f.advance(d)
 	clear(m.changed)
-	m.schemaChanged = false
+	m.schemaChanged, m.pruned = false, false
+	m.caughtUp++
 
 	if got, want := f.held(), m.held(); !slices.Equal(got, want) || f.schema != m.source {
 		t.Fatalf("%s: the reader holds %q under schema %q; the model holds %q under %q", at, got, f.schema, want, m.source)
 	}
 }
 
-// checkSnapshot fails unless Snapshot returns the tuples and the schema the model holds.
-func (m *model) checkSnapshot(t *testing.T, at string, s *Store) {
+// checkSnapshot fails unless Snapshot returns the tuples and the schema the model holds. It returns what Snapshot did.
+func (m *model) checkSnapshot(t *testing.T, at string, s *Store) State {
 	t.Helper()
 
 	st, err := s.Snapshot(t.Context())
@@ -376,6 +402,8 @@ func (m *model) checkSnapshot(t *testing.T, at string, s *Store) {
 	if got, want := newFollower(s, st).held(), m.held(); !slices.Equal(got, want) || st.Schema != m.source {
 		t.Fatalf("%s: Snapshot holds %q under schema %q; the model holds %q under %q", at, got, st.Schema, want, m.source)
 	}
+
+	return st
 }
 
 // modelShapes are the tuples a request names, with R for a resource ID and S for a subject ID.
