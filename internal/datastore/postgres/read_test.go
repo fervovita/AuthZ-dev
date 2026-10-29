@@ -54,6 +54,11 @@ func (f *follower) catchUp(t *testing.T) Delta {
 	return d
 }
 
+// startOver replaces f's copy with a new Snapshot, as a reader does when Changes answers ErrPruned.
+func (f *follower) startOver(st State) {
+	*f = *newFollower(f.s, st)
+}
+
 func (f *follower) advance(d Delta) {
 	f.rev = d.Revision
 
@@ -317,9 +322,9 @@ func TestChangesFollowsCommitsNotTransactionOrder(t *testing.T) {
 	}
 }
 
-// readWhileLocked runs read while another transaction holds tuples, and has that transaction apply u and
-// commit once read waits on the table: after read has taken its revision, before it has read a tuple.
-func readWhileLocked[T any](t *testing.T, s *Store, u Update, read func() (T, error)) T {
+// readWhileLocked runs read while another transaction holds tuples. Once read waits on the table, after it has
+// taken its revision and before it has read a tuple, it calls meanwhile with that transaction and commits it.
+func readWhileLocked[T any](t *testing.T, s *Store, meanwhile func(pgx.Tx), read func() (T, error)) T {
 	t.Helper()
 
 	blocker := begin(t, s)
@@ -354,7 +359,7 @@ func readWhileLocked[T any](t *testing.T, s *Store, u Update, read func() (T, er
 		}
 	}
 
-	apply(t, blocker, u)
+	meanwhile(blocker)
 	commit(t, blocker)
 
 	r := <-done
@@ -373,7 +378,8 @@ func TestSnapshotReadsAtItsRevision(t *testing.T) {
 
 	const alice = "document:d1#viewer@user:alice"
 
-	st := readWhileLocked(t, s, touch(alice), func() (State, error) { return s.Snapshot(t.Context()) })
+	st := readWhileLocked(t, s, func(tx pgx.Tx) { apply(t, tx, touch(alice)) },
+		func() (State, error) { return s.Snapshot(t.Context()) })
 	if len(st.Tuples) != 0 {
 		t.Fatalf("Snapshot holds %v; want the commit after its revision left out", st.Tuples)
 	}
@@ -400,7 +406,8 @@ func TestChangesReadsAtItsRevision(t *testing.T) {
 
 	write(t, s, touch(alice))
 
-	d := readWhileLocked(t, s, remove(alice), func() (Delta, error) { return s.Changes(t.Context(), f.rev) })
+	d := readWhileLocked(t, s, func(tx pgx.Tx) { apply(t, tx, remove(alice)) },
+		func() (Delta, error) { return s.Changes(t.Context(), f.rev) })
 	if got, want := changes(d), []string{alice + " +"}; !slices.Equal(got, want) {
 		t.Fatalf("Changes = %q; want %q", got, want)
 	}

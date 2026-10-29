@@ -94,6 +94,15 @@ func openStore(tb testing.TB, connString string) *Store {
 	return s
 }
 
+// exec runs sql on s's database directly, past the store's own methods.
+func exec(tb testing.TB, s *Store, sql string, args ...any) {
+	tb.Helper()
+
+	if _, err := s.pool.Exec(tb.Context(), sql, args...); err != nil {
+		tb.Fatalf("%s: %v", sql, err)
+	}
+}
+
 // together starts every fn at once and returns their errors in fns order.
 func together(fns ...func() error) []error {
 	errs := make([]error, len(fns))

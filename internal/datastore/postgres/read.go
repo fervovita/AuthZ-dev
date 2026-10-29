@@ -64,16 +64,30 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 }
 
 // Changes reads what a reader at since needs to reach the newest revision.
-// since comes from Snapshot or Changes.
+// since comes from Snapshot or Changes. It returns ErrPruned if Prune has cut the log past since.
 func (s *Store) Changes(ctx context.Context, since Revision) (Delta, error) {
 	var d Delta
 
 	err := s.inTx(ctx, "changes", readTx, func(tx pgx.Tx) error {
-		var err error
+		var (
+			snapshot string
+			pruned   bool
+		)
 
-		if d.Revision, err = revision(ctx, tx); err != nil {
-			return err
+		// The log holds every change by a transaction at or after its oldest mark.
+		// since needs those of the transactions it had not seen end, the oldest of which is its xmin.
+		err := tx.QueryRow(ctx, `SELECT pg_current_snapshot()::text,
+			NOT EXISTS (SELECT 1 FROM log_marks WHERE xid <= pg_snapshot_xmin($1::pg_snapshot))`,
+			string(since)).Scan(&snapshot, &pruned)
+		if err != nil {
+			return fmt.Errorf("postgres: changes: %w", err)
 		}
+
+		if pruned {
+			return ErrPruned
+		}
+
+		d.Revision = Revision(snapshot)
 
 		var source string
 

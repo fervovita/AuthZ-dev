@@ -21,6 +21,7 @@ import (
 // when another database's store runs them.
 // While writers race, readers that follow the store hold at every revision only what one moment of it held:
 // no request in part, and no tuple that revision's schema refuses.
+// Half the runs prune the log all along: a reader is told when to start over, and never misses a change unawares.
 // Once the writers stop, every reader holds what the store holds.
 func TestContract(t *testing.T) {
 	t.Parallel()
@@ -44,12 +45,14 @@ func TestContract(t *testing.T) {
 }
 
 const (
-	contractSeeds      = 4
+	contractSeeds      = 8
 	contractWriters    = 4
 	contractOps        = 150 // per writer
 	contractReaders    = 3   // the first starts before any schema, the last once the writers are halfway
 	contractPairs      = 4   // the pairs most requests write: few, so that requests meet
 	contractLargePairs = 40  // the pairs a large request writes at once, the first contractPairs among them
+
+	contractPruneEvery = 5 * time.Millisecond // a few requests apart, so readers catch up between prunes too
 )
 
 // pairForms are the tuples a pair can hold, each with %s for the resource ID.
@@ -112,7 +115,7 @@ func runContract(t *testing.T, open func(*testing.T) *Store) {
 
 			// Two readers start before any schema is written.
 			first := follow(t, s)  // follows all along
-			asleep := follow(t, s) // sleeps until the writers stop, then catches up in one step
+			asleep := follow(t, s) // sleeps until the writers stop, then catches up in one step if nothing is pruned
 
 			if err := s.WriteSchema(t.Context(), contractSchema(true, true, true)); err != nil {
 				t.Fatalf("WriteSchema: %v", err)
@@ -123,6 +126,7 @@ func runContract(t *testing.T, open func(*testing.T) *Store) {
 				progress atomic.Int64
 				writers  sync.WaitGroup
 				readers  sync.WaitGroup
+				pruner   sync.WaitGroup
 			)
 
 			stop := make(chan struct{})
@@ -152,7 +156,27 @@ func runContract(t *testing.T, open func(*testing.T) *Store) {
 						f = newFollower(s, st)
 					}
 
-					followers[i] = read(t, f, stop)
+					followers[i] = read(t, f, stop, &done)
+				})
+			}
+
+			// Odd seeds keep nothing, which sends a reader back to Snapshot whenever a change it has not heard of is dropped.
+			pruning := seed%2 == 1
+			if pruning {
+				pruner.Go(func() {
+					for {
+						select {
+						case <-stop:
+							return
+						case <-time.After(contractPruneEvery):
+						}
+
+						if err := s.Prune(t.Context(), 0); err != nil {
+							t.Errorf("seed %d: Prune: %v", seed, err)
+
+							return
+						}
+					}
 				})
 			}
 
@@ -176,6 +200,7 @@ func runContract(t *testing.T, open func(*testing.T) *Store) {
 			writers.Wait()
 			close(stop)
 			readers.Wait()
+			pruner.Wait()
 
 			if t.Failed() {
 				return
@@ -196,7 +221,9 @@ func runContract(t *testing.T, open func(*testing.T) *Store) {
 					t.Fatalf("seed %d: reader %d never started", seed, i)
 				}
 
-				f.catchUp(t)
+				if !catchUpOrStartOver(t, f, &done) {
+					return
+				}
 
 				if got, want := f.held(), want.held(); !slices.Equal(got, want) {
 					t.Errorf("seed %d: reader %d holds %q; the store holds %q", seed, i, got, want)
@@ -212,13 +239,21 @@ func runContract(t *testing.T, open func(*testing.T) *Store) {
 			if !done.writes.passed() || !done.large.passed() || !done.deletes.passed() || !done.schemas.passed() {
 				t.Errorf("seed %d: the store let through none of one kind of request, so the run tested little", seed)
 			}
+
+			if done.caughtUp.Load() == 0 || pruning && done.startedOver.Load() == 0 {
+				t.Errorf("seed %d: no reader caught up, or none had to start over, so the run tested little", seed)
+			}
+
+			if !pruning && done.startedOver.Load() > 0 {
+				t.Errorf("seed %d: a reader started over though nothing was pruned", seed)
+			}
 		})
 	}
 }
 
 // read follows f's store until stop closes, checking the copy at every revision it reaches.
 // It returns f, or nil once it has reported a failure.
-func read(t *testing.T, f *follower, stop <-chan struct{}) *follower {
+func read(t *testing.T, f *follower, stop <-chan struct{}, done *tally) *follower {
 	for {
 		if v := violation(f); v != "" {
 			t.Errorf("at revision %s, a reader %s", f.rev, v)
@@ -232,15 +267,40 @@ func read(t *testing.T, f *follower, stop <-chan struct{}) *follower {
 		default:
 		}
 
-		d, err := f.s.Changes(t.Context(), f.rev)
-		if err != nil {
-			t.Errorf("Changes: %v", err)
-
+		if !catchUpOrStartOver(t, f, done) {
 			return nil
 		}
-
-		f.advance(d)
 	}
+}
+
+// catchUpOrStartOver takes f to a newer revision: by Changes, or by Snapshot if the changes f needs are pruned.
+// It reports whether it could.
+func catchUpOrStartOver(t *testing.T, f *follower, done *tally) bool {
+	d, err := f.s.Changes(t.Context(), f.rev)
+	if err == nil {
+		f.advance(d)
+		done.caughtUp.Add(1)
+
+		return true
+	}
+
+	if !errors.Is(err, ErrPruned) {
+		t.Errorf("Changes: %v", err)
+
+		return false
+	}
+
+	st, err := f.s.Snapshot(t.Context())
+	if err != nil {
+		t.Errorf("Snapshot: %v", err)
+
+		return false
+	}
+
+	f.startOver(st)
+	done.startedOver.Add(1)
+
+	return true
 }
 
 // violation reports how f's copy breaks the contract at its revision, or "" if it keeps it.
@@ -379,14 +439,16 @@ func randomOp(rnd *rand.Rand) Op {
 	return Touch
 }
 
-// tally counts what the writers sent and what the store refused, so a run shows it put each kind of request to the test.
+// tally counts what the writers sent and what the store refused, and how the readers moved on,
+// so a run shows it put each kind of request and each way of reading to the test.
 type tally struct {
 	writes, large, deletes, schemas count
+	caughtUp, startedOver           atomic.Int64
 }
 
 func (ta *tally) String() string {
-	return fmt.Sprintf("writes %s, large writes %s, deletes %s, schemas %s",
-		&ta.writes, &ta.large, &ta.deletes, &ta.schemas)
+	return fmt.Sprintf("writes %s, large writes %s, deletes %s, schemas %s; readers caught up %d times, started over %d",
+		&ta.writes, &ta.large, &ta.deletes, &ta.schemas, ta.caughtUp.Load(), ta.startedOver.Load())
 }
 
 type count struct {
