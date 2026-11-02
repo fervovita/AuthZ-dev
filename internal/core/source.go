@@ -36,6 +36,7 @@ type WildcardRequest struct {
 
 // TupleSource is the evaluator's view of stored tuples.
 // Implementations must be safe for concurrent use, so a buffer reused between answers needs one per call.
+// All answers within one Check must come from one revision.
 type TupleSource interface {
 	// Lookup answers reqs, calling yield with each request's index and answer, in
 	// any order; returning false ends the round and Lookup returns nil.

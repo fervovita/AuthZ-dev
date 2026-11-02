@@ -188,6 +188,15 @@ func TestIDSpaceExhausted(t *testing.T) {
 	}
 }
 
+// The default ceiling stops short of UnknownObject, so no interned identifier is mistaken for an unknown one.
+func TestUnknownObjectIsNeverHandedOut(t *testing.T) {
+	t.Parallel()
+
+	if d := NewDictionary(); d.limit >= uint64(UnknownObject) {
+		t.Errorf("the dictionary hands out IDs up to %d, which reaches UnknownObject (%d)", d.limit, UnknownObject)
+	}
+}
+
 // The ceiling applies to every ID space, and the error says which one filled.
 func TestIDSpaceExhaustedAppliesToEverySpace(t *testing.T) {
 	t.Parallel()

@@ -344,6 +344,7 @@ func TestFormat(t *testing.T) {
 		{"userset", SubjectRef{Type: team, ID: eng, Relation: member}, "team:eng#member"},
 		{"wildcard", WildcardSubject(user), "user:*"},
 		{"unresolved object", SubjectRef{Type: user, ID: 0}, "user:?"},
+		{"unknown object", SubjectRef{Type: user, ID: UnknownObject}, "user:?"},
 		{"dangling", SubjectRef{Type: 9999, ID: 9999}, "!dangling(9999):!dangling(9999)"},
 	}
 
