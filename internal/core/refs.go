@@ -6,8 +6,8 @@ import (
 )
 
 const (
-	unresolvedName = "?"         // a zero id: the dictionary has not seen the name
-	danglingName   = "!dangling" // a nonzero id that does not resolve, which should be impossible
+	unresolvedName = "?"         // a zero id or UnknownObject: the dictionary has not seen the name
+	danglingName   = "!dangling" // any other id that does not resolve, which should be impossible
 )
 
 // InternObjectRef resolves a resource reference, adding unseen strings, and does
@@ -148,7 +148,7 @@ func (d *Dictionary) subjectRefString(s SubjectRef) string {
 }
 
 func nameOf(t *table, id uint32) string {
-	if id == 0 {
+	if id == 0 || id == uint32(UnknownObject) {
 		return unresolvedName
 	}
 

@@ -26,8 +26,12 @@ const NoRelation RelationID = 0
 // This design makes that a readiness failure, not a per-tuple skip.
 var ErrIDSpaceExhausted = errors.New("core: id space exhausted")
 
-// defaultLimit is the highest ID that fits in uint32.
-const defaultLimit = uint64(math.MaxUint32)
+// UnknownObject stands for an identifier the dictionary has never seen, so a check can ask about one without interning it.
+// No name is ever given it, so no tuple names it: only a wildcard grants it.
+const UnknownObject = ObjectID(math.MaxUint32)
+
+// defaultLimit is the highest ID the dictionary hands out.
+const defaultLimit = uint64(math.MaxUint32) - 1
 
 type table struct {
 	space string
