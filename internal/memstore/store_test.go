@@ -216,6 +216,43 @@ func TestStoreIsNotReadyAfterAFailure(t *testing.T) {
 	}
 }
 
+// A reset or a change list names each tuple once, so one that names a tuple twice is refused, as a removal of a
+// tuple never held is too: the store is then not ready.
+func TestStoreRefusesATupleNamedTwice(t *testing.T) {
+	t.Parallel()
+
+	const banned, ghost = "document:d1#banned@user:carol", "document:d1#viewer@user:ghost"
+
+	for name, fail := range map[string]func(*testing.T, *Store) error{
+		"in a reset": func(t *testing.T, s *Store) error {
+			return s.Reset(watch.Revision("r1"), testSchema, tuplesOf(t, banned, banned))
+		},
+		"as there and not": func(t *testing.T, s *Store) error {
+			return s.Apply(watch.Revision("r1"), nil, []watch.Change{touch(t, banned), remove(t, banned)})
+		},
+		"removed unheld, then added": func(t *testing.T, s *Store) error {
+			return s.Apply(watch.Revision("r1"), nil, []watch.Change{remove(t, ghost), touch(t, ghost)})
+		},
+		"removed unheld twice": func(t *testing.T, s *Store) error {
+			return s.Apply(watch.Revision("r1"), nil, []watch.Change{remove(t, ghost), remove(t, ghost)})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var s Store
+
+			reset(t, &s, testSchema, "document:d1#viewer@user:carol")
+
+			if err := fail(t, &s); err == nil {
+				t.Fatal("the store took a tuple named twice")
+			}
+
+			assertNotReady(t, &s)
+		})
+	}
+}
+
 // A Reset interns into a new dictionary, so names that left the store leave the dictionary too.
 func TestResetStartsAFreshDictionary(t *testing.T) {
 	t.Parallel()

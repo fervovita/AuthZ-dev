@@ -14,7 +14,7 @@ import (
 var ErrNotReady = errors.New("memstore: not ready")
 
 // Store is the central store at one revision, held in memory.
-// The zero value is ready for Reset. One goroutine feeds it with Reset and Apply while any number call Check.
+// The zero value is ready to be fed. One goroutine feeds it, by Follow or by Reset and Apply, while any number call Check.
 type Store struct {
 	// mu is held for reading across a whole Check, so a change never lands between two of its reads.
 	mu      sync.RWMutex
@@ -31,23 +31,26 @@ type CheckRequest struct {
 	SubjectRelation string // "" names the subject itself
 }
 
-// Reset replaces everything s holds with the store at revision: the schema then in force and every tuple stored.
+// Reset replaces everything s holds with the store at revision: the schema then in force and every tuple stored, each once.
 // s drops what it held first, so a Check meanwhile answers ErrNotReady and the old and new replicas are never live at once.
 func (s *Store) Reset(revision watch.Revision, schema string, tuples []watch.Tuple) error {
-	s.mu.Lock()
-	s.current = nil
-	s.mu.Unlock()
+	s.set(nil)
 
 	r, err := newReplica(revision, schema, tuples)
 	if err != nil {
 		return err
 	}
 
+	s.set(r)
+
+	return nil
+}
+
+// set makes r what s answers from: nil leaves it not ready.
+func (s *Store) set(r *replica) {
 	s.mu.Lock()
 	s.current = r
 	s.mu.Unlock()
-
-	return nil
 }
 
 // Apply moves s to revision.

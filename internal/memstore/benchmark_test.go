@@ -10,7 +10,7 @@ import (
 )
 
 // BenchmarkCheck reads what a Check costs on a replica, in the shapes core's BenchmarkCheck reads on its test map:
-// the difference is what the store and resolving names add.
+// the difference is the replica's lookups against the map's, plus resolving names and the lock.
 func BenchmarkCheck(b *testing.B) {
 	for _, c := range checkCases() {
 		b.Run(c.name, func(b *testing.B) {
