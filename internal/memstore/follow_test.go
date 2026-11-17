@@ -375,6 +375,10 @@ func TestFollowStartsOverWhenAnEventFails(t *testing.T) {
 			sub.land(t, parts(t, "r2", testSchema, []string{"document:d1#viewer@user:bob"}, nil)[0])
 			sub.send(t, whole(t, "r3", testSchema, "document:d1#viewer@user:carol"))
 		},
+		"a schema in a later part": func(t *testing.T, _ *Store, sub *testSubscription) {
+			sub.land(t, parts(t, "r2", testSchema, []string{"document:d1#viewer@user:bob"}, nil)[0])
+			sub.send(t, watch.Event{Reset: &watch.Reset{Schema: testSchema}})
+		},
 		"a delta that does not compile": func(t *testing.T, _ *Store, sub *testSubscription) {
 			sub.send(t, deltaOf("r2", &broken))
 		},

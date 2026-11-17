@@ -67,9 +67,9 @@ func (s *Store) follow(ctx context.Context, src watch.Source) bool {
 			p := ev.Reset
 			first := len(p.Revision) > 0
 
-			// A part with a revision begins a reset and one without continues it.
-			// Out of turn, the replica would hold what no single reset sent.
-			if first == (r != nil) {
+			// A part with a revision begins a reset, and one with neither a revision nor a schema continues it.
+			// Any other part, or one out of turn, would leave the replica holding what no single reset sent.
+			if first == (r != nil) || (!first && p.Schema != "") {
 				return moved
 			}
 
