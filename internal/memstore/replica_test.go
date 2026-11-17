@@ -19,18 +19,27 @@ var (
 	}
 )
 
+// modelTuples is every tuple of a model key and a model subject.
+func modelTuples(tb testing.TB) []watch.Tuple {
+	tb.Helper()
+
+	var tuples []watch.Tuple
+
+	for _, k := range modelKeys {
+		for _, s := range modelSubjects {
+			tuples = append(tuples, tupleOf(tb, k+"@"+s))
+		}
+	}
+
+	return tuples
+}
+
 // After any run of resets and changes, the replica answers each question the evaluator asks as the plain set of
 // tuples would, and holds a key only while a tuple is on it.
 func TestReplicaMatchesASetOfTuples(t *testing.T) {
 	t.Parallel()
 
-	var universe []watch.Tuple
-
-	for _, k := range modelKeys {
-		for _, s := range modelSubjects {
-			universe = append(universe, tupleOf(t, k+"@"+s))
-		}
-	}
+	universe := modelTuples(t)
 
 	for seed := range 20 {
 		//nolint:gosec // G404: a failing run has to be reproducible from its seed

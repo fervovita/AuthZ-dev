@@ -48,8 +48,18 @@ func newReplica(revision watch.Revision, source string, tuples []watch.Tuple) (*
 		return nil, err
 	}
 
-	items := make([]item, 0, len(tuples))
+	items, err := r.load(make([]item, 0, len(tuples)), tuples)
+	if err != nil {
+		return nil, err
+	}
 
+	r.merge(items)
+
+	return r, nil
+}
+
+// load interns tuples, all present, onto items.
+func (r *replica) load(items []item, tuples []watch.Tuple) ([]item, error) {
 	for _, t := range tuples {
 		it, err := r.intern(t)
 		if err != nil {
@@ -59,9 +69,7 @@ func newReplica(revision watch.Revision, source string, tuples []watch.Tuple) (*
 		items = append(items, it)
 	}
 
-	r.merge(items)
-
-	return r, nil
+	return items, nil
 }
 
 func (r *replica) apply(revision watch.Revision, source *string, changes []watch.Change) error {
