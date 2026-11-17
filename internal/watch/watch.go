@@ -44,7 +44,7 @@ type Event struct {
 
 // Reset is part of the whole store at Revision, which replaces everything a follower holds.
 // Only the first part carries Revision and Schema, and More says the next event is another part.
-// A follower serves after the last.
+// The parts name each tuple once between them. A follower serves after the last.
 type Reset struct {
 	Revision Revision
 	Schema   string // the source in force; "" before any is written
@@ -53,7 +53,7 @@ type Reset struct {
 }
 
 // Delta moves a follower from the revision it holds to Revision.
-// Changes holds every tuple touched in between, and may repeat some the follower already holds.
+// Changes holds every tuple touched in between, each once, and may restate some as the follower already holds them.
 type Delta struct {
 	Revision Revision
 	Schema   *string  // the source in force at Revision if one was written since, nil otherwise

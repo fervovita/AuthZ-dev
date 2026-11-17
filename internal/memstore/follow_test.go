@@ -373,11 +373,16 @@ func TestFollowStartsOverWhenAnEventFails(t *testing.T) {
 		},
 		"a reset inside a reset": func(t *testing.T, _ *Store, sub *testSubscription) {
 			sub.land(t, parts(t, "r2", testSchema, []string{"document:d1#viewer@user:bob"}, nil)[0])
-			sub.send(t, whole(t, "r3", testSchema, "document:d1#viewer@user:carol"))
+			sub.send(t, whole(t, "r3", testSchema, "document:d1#banned@user:carol"))
 		},
 		"a schema in a later part": func(t *testing.T, _ *Store, sub *testSubscription) {
 			sub.land(t, parts(t, "r2", testSchema, []string{"document:d1#viewer@user:bob"}, nil)[0])
 			sub.send(t, watch.Event{Reset: &watch.Reset{Schema: testSchema}})
+		},
+		"a tuple in two parts": func(t *testing.T, _ *Store, sub *testSubscription) {
+			twice := parts(t, "r2", testSchema, []string{"document:d1#viewer@user:bob"}, []string{"document:d1#viewer@user:bob"})
+			sub.land(t, twice[0])
+			sub.send(t, twice[1])
 		},
 		"a delta that does not compile": func(t *testing.T, _ *Store, sub *testSubscription) {
 			sub.send(t, deltaOf("r2", &broken))

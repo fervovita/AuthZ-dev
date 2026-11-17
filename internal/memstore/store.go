@@ -31,7 +31,7 @@ type CheckRequest struct {
 	SubjectRelation string // "" names the subject itself
 }
 
-// Reset replaces everything s holds with the store at revision: the schema then in force and every tuple stored.
+// Reset replaces everything s holds with the store at revision: the schema then in force and every tuple stored, each once.
 // s drops what it held first, so a Check meanwhile answers ErrNotReady and the old and new replicas are never live at once.
 func (s *Store) Reset(revision watch.Revision, schema string, tuples []watch.Tuple) error {
 	s.set(nil)

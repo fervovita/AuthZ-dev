@@ -53,7 +53,9 @@ func newReplica(revision watch.Revision, source string, tuples []watch.Tuple) (*
 		return nil, err
 	}
 
-	r.merge(items)
+	if err := r.merge(items); err != nil {
+		return nil, err
+	}
 
 	return r, nil
 }
@@ -79,22 +81,39 @@ func (r *replica) apply(revision watch.Revision, source *string, changes []watch
 		}
 	}
 
-	items := make([]item, 0, len(changes))
+	var (
+		items  = make([]item, 0, len(changes))
+		unheld map[watch.Tuple]bool // removals of tuples never held, which leave no item for merge to compare
+	)
 
 	for _, c := range changes {
-		if c.Present {
+		switch {
+		case unheld[c.Tuple]:
+			return fmt.Errorf("memstore: %v: named twice", c.Tuple)
+		case c.Present:
 			it, err := r.intern(c.Tuple)
 			if err != nil {
 				return err
 			}
 
 			items = append(items, it)
-		} else if it, ok := r.resolve(c.Tuple); ok {
-			items = append(items, it)
+		default:
+			if it, ok := r.resolve(c.Tuple); ok {
+				items = append(items, it)
+			} else {
+				if unheld == nil {
+					unheld = make(map[watch.Tuple]bool)
+				}
+
+				unheld[c.Tuple] = true
+			}
 		}
 	}
 
-	r.merge(items)
+	if err := r.merge(items); err != nil {
+		return err
+	}
+
 	r.revision = revision
 
 	return nil
@@ -156,10 +175,18 @@ func (r *replica) resolve(t watch.Tuple) (item, bool) {
 }
 
 // merge lands items a key at a time, so a key's lists are rebuilt once however many of its subjects changed.
-func (r *replica) merge(items []item) {
+// It lands none if two name the same tuple: tuples come once each, and twice could say one is both there and gone.
+func (r *replica) merge(items []item) error {
 	slices.SortFunc(items, func(a, b item) int {
 		return cmp.Or(compareKeys(a.key, b.key), compareSubjects(a.subject, b.subject))
 	})
+
+	for i := 1; i < len(items); i++ {
+		if it := items[i]; it.key == items[i-1].key && it.subject == items[i-1].subject {
+			return fmt.Errorf("memstore: %s: named twice",
+				r.names.FormatTuple(core.Tuple{Object: it.key.object, Relation: it.key.relation, Subject: it.subject}))
+		}
+	}
 
 	for len(items) > 0 {
 		n := 1
@@ -170,6 +197,8 @@ func (r *replica) merge(items []item) {
 		r.mergeKey(items[0].key, items[:n])
 		items = items[n:]
 	}
+
+	return nil
 }
 
 // mergeKey lands items, all on k and sorted, and drops k once it holds nothing.

@@ -86,7 +86,10 @@ func (s *Store) follow(ctx context.Context, src watch.Source) bool {
 			}
 
 			if !p.More {
-				r.merge(items)
+				if err := r.merge(items); err != nil {
+					return moved
+				}
+
 				s.set(r)
 
 				r, items, moved = nil, nil, true
