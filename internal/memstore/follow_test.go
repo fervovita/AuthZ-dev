@@ -412,7 +412,7 @@ func TestFollowStartsOverWhenAnEventFails(t *testing.T) {
 }
 
 // An event Follow cannot read ends the subscription and leaves the store as it was: one with neither a reset nor
-// a delta, one with both, and a part that continues a reset none has begun.
+// a delta, one with both, a part that continues a reset none has begun, and a delta without a revision.
 func TestFollowEndsOnAnEventItCannotRead(t *testing.T) {
 	t.Parallel()
 
@@ -421,9 +421,10 @@ func TestFollowEndsOnAnEventItCannotRead(t *testing.T) {
 	both.Delta = deltaOf("r3", nil, remove(t, "document:d1#viewer@user:alice")).Delta
 
 	for name, ev := range map[string]watch.Event{
-		"neither":            {},
-		"both":               both,
-		"a part out of turn": {Reset: &watch.Reset{Tuples: bob}},
+		"neither":                    {},
+		"both":                       both,
+		"a part out of turn":         {Reset: &watch.Reset{Tuples: bob}},
+		"a delta without a revision": deltaOf("", nil, touch(t, "document:d1#viewer@user:bob")),
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

@@ -92,6 +92,11 @@ func (s *Store) follow(ctx context.Context, src watch.Source) bool {
 				r, items, moved = nil, nil, true
 			}
 		case ev.Delta != nil && ev.Reset == nil:
+			// A delta moves s to its revision, so one without a revision leaves nowhere to subscribe again from.
+			if len(ev.Delta.Revision) == 0 {
+				return moved
+			}
+
 			// Within a reset s holds nothing, so Apply refuses the delta.
 			if err := s.Apply(ev.Delta.Revision, ev.Delta.Schema, ev.Delta.Changes); err != nil {
 				return moved
