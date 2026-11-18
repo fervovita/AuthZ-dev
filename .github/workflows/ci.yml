@@ -47,7 +47,8 @@ jobs:
           check-latest: true
           cache: true
       - run: go test -race ./...
-      - run: go test -run '^$' -bench . -benchtime=1x ./...
+      - run: go test -v -run '^$' -bench . -benchtime=1x ./...
+        timeout-minutes: 5
 
   integration:
     name: Integration (Postgres ${{ matrix.postgres }})
@@ -68,7 +69,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - run: go test -race -tags integration ./...
-      - run: go test -run '^$' -bench . -benchtime=1x -tags integration ./...
+      # go test sets no -timeout on benchmarks: this step's limit stops a hung one, and -v names it before it runs.
+      - run: go test -v -run '^$' -bench . -benchtime=1x -tags integration ./...
+        timeout-minutes: 5
 
   lint:
     name: Lint
