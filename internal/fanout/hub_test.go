@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/fervovita/AuthZ-dev/internal/datastore/postgres"
@@ -697,66 +698,63 @@ func TestAFailedReadLosesNothing(t *testing.T) {
 func TestALeftSubscriptionIsDropped(t *testing.T) {
 	t.Parallel()
 
-	f := newFakeStore()
-	f.write(true, lines(partSize+1)...)
+	synctest.Test(t, func(t *testing.T) {
+		f := newFakeStore()
+		f.write(true, lines(partSize+1)...)
 
-	h := newHub(f, time.Hour)
-	stay := follow(t, h)
+		h := newHub(f, time.Hour)
+		stay := follow(t, h)
 
-	midwayCtx, leaveMidway := context.WithCancel(t.Context())
+		midwayCtx, leaveMidway := context.WithCancel(t.Context())
 
-	midway, err := h.Subscribe(midwayCtx, nil)
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
+		midway, err := h.Subscribe(midwayCtx, nil)
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
 
-	h.step(t.Context())
-	stay.catchUp()
+		h.step(t.Context())
+		stay.catchUp()
 
-	if ev, err := midway.Recv(); err != nil || ev.Reset == nil || !ev.Reset.More {
-		t.Fatalf("Recv = %+v, %v; want the reset's first part", ev, err)
-	}
+		if ev, err := midway.Recv(); err != nil || ev.Reset == nil || !ev.Reset.More {
+			t.Fatalf("Recv = %+v, %v; want the reset's first part", ev, err)
+		}
 
-	leaveMidway()
+		leaveMidway()
 
-	if _, err := midway.Recv(); !errors.Is(err, context.Canceled) {
-		t.Errorf("Recv after leaving midway = %v; want context.Canceled", err)
-	}
+		if _, err := midway.Recv(); !errors.Is(err, context.Canceled) {
+			t.Errorf("Recv after leaving midway = %v; want context.Canceled", err)
+		}
 
-	waitingCtx, leaveWaiting := context.WithCancel(t.Context())
+		waitingCtx, leaveWaiting := context.WithCancel(t.Context())
 
-	waiting, err := h.Subscribe(waitingCtx, nil)
-	if err != nil {
-		t.Fatalf("Subscribe: %v", err)
-	}
+		waiting, err := h.Subscribe(waitingCtx, nil)
+		if err != nil {
+			t.Fatalf("Subscribe: %v", err)
+		}
 
-	got := make(chan error, 1)
+		got := make(chan error, 1)
 
-	go func() {
-		_, err := waiting.Recv()
-		got <- err
-	}()
+		go func() {
+			_, err := waiting.Recv()
+			got <- err
+		}()
 
-	time.Sleep(10 * time.Millisecond) // for Recv to be waiting when its follower leaves
-	leaveWaiting()
+		synctest.Wait() // every goroutine in the bubble is blocked, so Recv is waiting
+		leaveWaiting()
 
-	select {
-	case err := <-got:
-		if !errors.Is(err, context.Canceled) {
+		if err := <-got; !errors.Is(err, context.Canceled) {
 			t.Errorf("Recv after leaving while waiting = %v; want context.Canceled", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Recv went on waiting after its follower left")
-	}
 
-	snapshots, _ := f.reads()
+		snapshots, _ := f.reads()
 
-	h.step(t.Context())
+		h.step(t.Context())
 
-	if s, _ := f.reads(); s != snapshots || len(h.live) != 1 || h.live[0] != stay.sub {
-		t.Errorf("the tick read %d Snapshots and left %d subscriptions live; want none and only the one still followed",
-			s-snapshots, len(h.live))
-	}
+		if s, _ := f.reads(); s != snapshots || len(h.live) != 1 || h.live[0] != stay.sub {
+			t.Errorf("the tick read %d Snapshots and left %d subscriptions live; want none and only the one still followed",
+				s-snapshots, len(h.live))
+		}
+	})
 }
 
 // Run ticks until its context ends, then ends every subscription at once, even one midway through a reset,
