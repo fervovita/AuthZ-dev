@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"testing"
 	"time"
 
@@ -17,7 +18,8 @@ import (
 )
 
 // BenchmarkCommitToApply reads how long a write takes to reach a sidecar, by the hub's tick: from the call that writes
-// a tuple to the first Check its replica allows with it. Writes land at ten phases across the tick, as a service's would.
+// a tuple to the first Check its replica allows with it.
+// Writes land at phases spread evenly over the tick, as a service's would.
 func BenchmarkCommitToApply(b *testing.B) {
 	for _, tick := range []time.Duration{10 * time.Millisecond, 100 * time.Millisecond} {
 		b.Run(fmt.Sprintf("tick=%v", tick), func(b *testing.B) {
@@ -44,9 +46,15 @@ func BenchmarkCommitToApply(b *testing.B) {
 				time.Sleep(time.Millisecond)
 			}
 
+			//nolint:gosec // G404: a run's waits have to be reproducible from its seed
+			rnd := rand.New(rand.NewPCG(1, 0))
+
 			for i := 0; b.Loop(); i++ {
 				b.StopTimer()
-				time.Sleep(time.Duration(i%10) * tick / 10)
+
+				// A wait spread evenly over a tick lands the write at a phase spread evenly over it, whenever the last was seen.
+				// The tenths of the tick go in turn, so every ten writes cover it.
+				time.Sleep(time.Duration((float64(i%10) + rnd.Float64()) * float64(tick) / 10))
 
 				user := fmt.Sprintf("u%d", i)
 				tuple := postgres.Tuple{ResourceType: "doc", ResourceID: "d0", Relation: "left", SubjectType: "user", SubjectID: user}
