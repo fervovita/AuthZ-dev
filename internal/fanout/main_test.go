@@ -35,16 +35,18 @@ func run(m *testing.M) int {
 	image := cmp.Or(os.Getenv("POSTGRES_TEST_IMAGE"), "postgres:18-alpine")
 
 	ctr, err := tcpostgres.Run(ctx, image, tcpostgres.BasicWaitStrategies())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "start %s: %v\n", image, err)
-		return 1
-	}
 
+	// Run can return a container it failed to start, so it is stopped whatever err is.
 	defer func() {
 		if err := testcontainers.TerminateContainer(ctr); err != nil {
 			fmt.Fprintf(os.Stderr, "stop %s: %v\n", image, err)
 		}
 	}()
+
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "start %s: %v\n", image, err)
+		return 1
+	}
 
 	adminURL, err = ctr.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {

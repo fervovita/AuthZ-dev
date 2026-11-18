@@ -75,12 +75,13 @@ func (f *follower) Subscribe(ctx context.Context, from watch.Revision) (watch.Su
 		return nil, err
 	}
 
-	return &checked{f: f, sub: sub, c: contract{from: from}}, nil
+	return &checked{f: f, sub: sub, ctx: ctx, c: contract{from: from}}, nil
 }
 
 type checked struct {
 	f   *follower
 	sub watch.Subscription
+	ctx context.Context
 	c   contract
 }
 
@@ -96,6 +97,8 @@ func (s *checked) Recv() (watch.Event, error) {
 	case n == int64(f.pauseAt):
 		select {
 		case <-s.sub.(*subscription).done:
+		case <-s.ctx.Done(): // the follower left first: the hub drops the subscription without ending it
+			return watch.Event{}, s.ctx.Err()
 		case <-time.After(time.Minute): // the hub's reads stall for seconds when Docker's VM is busy
 			f.t.Errorf("%s: the hub never cut off a subscription that took nothing", f.name)
 		}
@@ -241,6 +244,9 @@ func TestFollowersOnlyEverHoldWholePairs(t *testing.T) {
 	)
 
 	ctx, cancel := context.WithCancel(t.Context())
+
+	// In this order, a test that stops early stops its goroutines and then waits for them.
+	defer running.Wait()
 	defer cancel()
 
 	for i, f := range followers {
@@ -275,18 +281,16 @@ func TestFollowersOnlyEverHoldWholePairs(t *testing.T) {
 		})
 	}
 
-	pruning := make(chan struct{})
-
 	running.Go(func() {
 		for {
 			select {
-			case <-pruning:
+			case <-ctx.Done():
 				return
 			case <-time.After(20 * time.Millisecond):
 			}
 
-			// Not ctx: the followers' end would cut a Prune short.
-			if err := st.Prune(t.Context(), keep); err != nil {
+			// Without ctx's cancel: stopping the followers would cut a Prune short.
+			if err := st.Prune(context.WithoutCancel(ctx), keep); err != nil {
 				t.Errorf("Prune: %v", err)
 
 				return
@@ -339,7 +343,6 @@ func TestFollowersOnlyEverHoldWholePairs(t *testing.T) {
 		}
 	}
 
-	close(pruning)
 	cancel()
 	running.Wait()
 
