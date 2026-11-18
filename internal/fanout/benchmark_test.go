@@ -157,6 +157,11 @@ func BenchmarkJoin(b *testing.B) {
 					if got := drain(b, sub); got != stored {
 						b.Fatalf("handed %d tuples; want %d", got, stored)
 					}
+
+					// The tick's broadcast waits behind the reset.
+					if len(sub.(*subscription).events) != 1 {
+						b.Fatal("the tick sent its joiners no broadcast")
+					}
 				}
 			}
 		})
