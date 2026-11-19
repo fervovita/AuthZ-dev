@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"slices"
 	"strconv"
@@ -419,5 +420,34 @@ func TestChangesReadsAtItsRevision(t *testing.T) {
 
 	if got, want := changes(next), []string{alice + " -"}; !slices.Equal(got, want) {
 		t.Errorf("Changes after = %q; want %q", got, want)
+	}
+}
+
+// What is not even in a revision's form is refused as invalid, so a reader knows to start over rather than ask again:
+// one that never was, the store's own with more after it, and bytes that are not text.
+func TestChangesRefusesWhatIsNotARevision(t *testing.T) {
+	t.Parallel()
+
+	s := schemaStore(t)
+	f := follow(t, s)
+
+	for _, since := range []string{"", "not a revision", "10:5:", string(f.rev) + "x", "\xff", string(f.rev) + "\x00"} {
+		if _, err := s.Changes(t.Context(), Revision(since)); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Changes(%q) = %v; want ErrInvalid", since, err)
+		}
+	}
+}
+
+// A read that fails otherwise is not ErrInvalid: the revision may be fine, so the reader asks again later.
+func TestChangesFailingOtherwiseIsNotInvalid(t *testing.T) {
+	t.Parallel()
+
+	s := schemaStore(t)
+	f := follow(t, s)
+
+	exec(t, s, `ALTER TABLE log_marks RENAME TO gone`)
+
+	if _, err := s.Changes(t.Context(), f.rev); err == nil || errors.Is(err, ErrInvalid) {
+		t.Errorf("Changes = %v; want an error other than ErrInvalid", err)
 	}
 }

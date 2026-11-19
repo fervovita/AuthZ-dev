@@ -25,7 +25,8 @@ type Change struct {
 // Source is the central store as a follower sees it.
 type Source interface {
 	// Subscribe starts a subscription at from, which is nil or a revision an earlier subscription delivered.
-	// It opens with a reset if from is nil or too old to catch up from, and otherwise with a delta from it.
+	// It opens with a reset if from is nil or cannot be caught up from, too old or not a revision at all,
+	// and otherwise with a delta from it.
 	// Ending ctx ends the subscription.
 	Subscribe(ctx context.Context, from Revision) (Subscription, error)
 }
