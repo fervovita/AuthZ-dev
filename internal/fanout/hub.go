@@ -105,8 +105,9 @@ func (h *Hub) step(ctx context.Context) {
 	}
 }
 
-// join sends each new subscription a delta from its revision, or a reset if it has none or the log no longer
-// reaches it, and makes it live. Those from one revision share a read, as all resets share one Snapshot.
+// join sends each new subscription a delta from its revision, or a reset if it has none or one the store cannot
+// read from, and makes it live.
+// Those from one revision share a read, as all resets share one Snapshot.
 func (h *Hub) join(ctx context.Context, subs []*subscription) {
 	var resets []*subscription
 
@@ -120,7 +121,7 @@ func (h *Hub) join(ctx context.Context, subs []*subscription) {
 		d, err := h.st.Changes(ctx, postgres.Revision(group[0].from))
 
 		switch {
-		case errors.Is(err, postgres.ErrPruned):
+		case errors.Is(err, postgres.ErrPruned), errors.Is(err, postgres.ErrInvalid):
 			resets = append(resets, group...)
 		case err != nil:
 			end(group, fmt.Errorf("fanout: %w", err))

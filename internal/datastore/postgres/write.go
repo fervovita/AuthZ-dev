@@ -10,7 +10,7 @@ import (
 	"github.com/fervovita/AuthZ-dev/internal/core"
 )
 
-// ErrInvalid reports a schema, an update or a filter the store refuses. The request changes nothing.
+// ErrInvalid reports a schema, an update, a filter or a revision the store refuses. The request changes nothing.
 var ErrInvalid = errors.New("postgres: invalid")
 
 // Tuple names one relationship in strings: IDs interned in a process never reach the store.

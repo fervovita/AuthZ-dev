@@ -4,9 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// dataException is the SQLSTATE class of a value Postgres refuses, as malformed or in the wrong encoding.
+const dataException = "22"
 
 // Revision is a point in the store's history.
 // Keep it and pass it back; do not parse or compare it.
@@ -64,7 +69,8 @@ func (s *Store) Snapshot(ctx context.Context) (State, error) {
 }
 
 // Changes reads what a reader at since needs to reach the newest revision.
-// since comes from Snapshot or Changes. It returns ErrPruned if Prune has cut the log past since.
+// since comes from Snapshot or Changes.
+// It returns ErrPruned if Prune has cut the log past since, and ErrInvalid if since is not even in a revision's form.
 func (s *Store) Changes(ctx context.Context, since Revision) (Delta, error) {
 	var d Delta
 
@@ -79,11 +85,15 @@ func (s *Store) Changes(ctx context.Context, since Revision) (Delta, error) {
 		err := tx.QueryRow(ctx, `SELECT pg_current_snapshot()::text,
 			NOT EXISTS (SELECT 1 FROM log_marks WHERE xid <= pg_snapshot_xmin($1::pg_snapshot))`,
 			string(since)).Scan(&snapshot, &pruned)
-		if err != nil {
-			return fmt.Errorf("postgres: changes: %w", err)
-		}
 
-		if pruned {
+		var pgErr *pgconn.PgError
+
+		switch {
+		case errors.As(err, &pgErr) && strings.HasPrefix(pgErr.Code, dataException):
+			return fmt.Errorf("%w: since: %w", ErrInvalid, err)
+		case err != nil:
+			return fmt.Errorf("postgres: changes: %w", err)
+		case pruned:
 			return ErrPruned
 		}
 

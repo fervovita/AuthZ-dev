@@ -153,7 +153,7 @@ func (f *fakeStore) Changes(_ context.Context, since postgres.Revision) (postgre
 
 	n, err := strconv.Atoi(string(since))
 	if err != nil {
-		return postgres.Delta{}, fmt.Errorf("revision %q: %w", since, err)
+		return postgres.Delta{}, fmt.Errorf("%w: since: %w", postgres.ErrInvalid, err)
 	}
 
 	if n < f.cut {
@@ -482,6 +482,34 @@ func TestJoinBehindTheCutGetsAReset(t *testing.T) {
 
 	back := subscribe(t, h, at)
 	back.rev, back.tuples = at, held
+
+	h.step(t.Context())
+	back.catchUp()
+	back.assertHolds(f)
+	r.catchUp()
+	r.assertHolds(f)
+
+	if back.resets != 1 {
+		t.Errorf("took %d resets; want one", back.resets)
+	}
+}
+
+// So does one from a revision the store cannot read, as from another kind of store: coming back from it would be
+// refused again, and its follower would serve what it holds for good.
+func TestJoinFromAnUnreadableRevisionGetsAReset(t *testing.T) {
+	t.Parallel()
+
+	f := newFakeStore()
+	f.write(true, "document:d1#viewer@user:alice")
+
+	h := newHub(f, time.Hour)
+	r := follow(t, h)
+
+	h.step(t.Context())
+	r.catchUp()
+
+	back := subscribe(t, h, watch.Revision("not a revision"))
+	back.tuples = map[watch.Tuple]bool{watch.Tuple(tupleOf("document:d1#viewer@user:bob")): true}
 
 	h.step(t.Context())
 	back.catchUp()
